@@ -1,0 +1,6 @@
+Connect "postgresql://saver:saver@127.0.0.1:5432/repo"
+CleanDatabase
+DebugQuery "SELECT * FROM names"
+DebugQuery "SELECT file, startRow, startColumn FROM names WHERE file = 'fixtures/SimpleTest.hs' AND startRow <= 6 AND endRow >= 6 AND startColumn <= 8 AND endColumn >= 8"
+FindDefinition "fixtures/SimpleTest.hs" 6 8
+Quit

@@ -1,0 +1,62 @@
+name:                hstools
+version:             0.1.0.0
+github:              "nboldi91/hstools"
+license:             BSD3
+author:              "Boldizsar Nemeth"
+maintainer:          "nboldi91@gmail.com"
+copyright:           "2022 Boldizsar Nemeth"
+
+extra-source-files:
+- README.md
+- ChangeLog.md
+
+# Metadata used when publishing your package
+# synopsis:            Short description of your package
+# category:            Web
+
+# To avoid duplicated efforts in documentation and dealing with the
+# complications of embedding Haddock markup inside cabal files, it is
+# common to point users to the README.md file.
+description:         Please see the README on GitHub at <https://github.com/nboldi91/hstools#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - Language.Haskell.HsTools.Plugin
+    - Language.Haskell.HsTools.Utils.ShowTable
+  dependencies:
+    - ghc
+    - postgresql-simple
+    - mtl
+    - filepath
+    - directory
+    - bytestring
+    - time
+
+executables:
+  hstools-exe:
+    main:                Main.hs
+    source-dirs:         app
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hstools
+    - postgresql-simple
+    - mtl
+    - bytestring
+
+tests:
+  hstools-test:
+    main:                Spec.hs
+    source-dirs:         test
+    ghc-options:
+    - -threaded
+    - -rtsopts
+    - -with-rtsopts=-N
+    dependencies:
+    - hstools
