@@ -44,7 +44,7 @@ data NameRecord = NameRecord
 
 storeNames :: Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
 storeNames conn (moduleName, moduleId) gr = do
-    ((), names) <- runWriterT (runReaderT (store $ hs_valds gr) (StoreContext moduleName))
+    ((), names) <- runWriterT (runReaderT (store $ hs_valds gr) (StoreContext moduleName noSrcSpan False))
     persistNames conn moduleId names
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
@@ -58,43 +58,47 @@ type StoreM = ReaderT StoreContext (WriterT [NameRecord] IO)
 
 data StoreContext = StoreContext
   { scModuleName :: String
+  , scSpan :: SrcSpan
+  , scDefining :: Bool
   }
 
-data UseDefine = Use | Define
+type IsGhcPass p =
+     ( HaskellAst (IdP (GhcPass p))
+     , HaskellAst (XExprWithTySig (GhcPass p))
+     , HaskellAst (XSigPat (GhcPass p))
+     )
 
-class NamePhase p where
-    storeName :: UseDefine -> Located (IdP (GhcPass p)) -> StoreM ()
-
-type IsGhcPass p = (NamePhase p, HaskellAst (XExprWithTySig (GhcPass p)), HaskellAst (XSigPat (GhcPass p)))
-
-instance NamePhase Renamed where
-    storeName ud (L (RealSrcSpan span) id) = do
-        let defined = case ud of Define -> True; Use -> False
-        currentModuleName <- asks scModuleName
-        let start = realSrcSpanStart span
-            end = realSrcSpanEnd span
-            modName = nameModule_maybe id
-            fullName = case modName of
-                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
-                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
-            storedName = NameRecord
-                { nmName = fullName
-                , nmIsDefined = defined
-                , nmStartRow = srcLocLine start
-                , nmEndRow = srcLocCol start
-                , nmStartCol = srcLocLine end
-                , nmEndCol = srcLocCol end
-                }
-        tell [storedName] 
-    storeName _ id = do
-        liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
-
+defining :: StoreM a -> StoreM a
+defining = local (\l -> l { scDefining = True })
 
 class HaskellAst a where
     store :: a -> StoreM ()
 
+instance HaskellAst Name where
+    store id = asks scSpan >>= \sp -> case sp of
+        RealSrcSpan span -> do
+            currentModuleName <- asks scModuleName
+            defined <- asks scDefining
+            let start = realSrcSpanStart span
+                end = realSrcSpanEnd span
+                modName = nameModule_maybe id
+                fullName = case modName of
+                            Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
+                            Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
+                storedName = NameRecord
+                    { nmName = fullName
+                    , nmIsDefined = defined
+                    , nmStartRow = srcLocLine start
+                    , nmEndRow = srcLocCol start
+                    , nmStartCol = srcLocLine end
+                    , nmEndCol = srcLocCol end
+                    }
+            tell [storedName] 
+        _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
+
+
 instance HaskellAst a => HaskellAst (Located a) where
-    store = store . unLoc
+    store (L span ast) = local (\l -> l { scSpan = span }) $ store ast 
 
 instance HaskellAst a => HaskellAst [a] where
     store = mapM_ store
@@ -113,19 +117,19 @@ instance IsGhcPass p => HaskellAst (HsValBinds (GhcPass p)) where
     store (XValBindsLR (NValBinds binds sigs)) = store sigs >> store (map snd binds)
 
 instance IsGhcPass p => HaskellAst (Sig (GhcPass p)) where
-    store (TypeSig _ ids types) = mapM_ (storeName @p Define) ids >> store types
+    store (TypeSig _ ids types) = defining (store ids) >> store types
     store _ = return () -- TODO
 
 instance IsGhcPass p => HaskellAst (HsType (GhcPass p)) where
     store (HsForAllTy _ vars body) = store vars >> store body
     store (HsQualTy _ ctx body) = store body
-    store (HsTyVar _ _ id) = storeName @p Use id
+    store (HsTyVar _ _ id) = store id
     store (HsAppTy _ lhs rhs) = store lhs >> store rhs
     store (HsFunTy _ lhs rhs) = store lhs >> store rhs
     store (HsListTy _ t) = store t
     store (HsTupleTy _ _ ts) = store ts
     store (HsSumTy _ ts) = store ts
-    store (HsOpTy _ lhs op rhs) = store lhs >> storeName @p Use op >> store rhs
+    store (HsOpTy _ lhs op rhs) = store lhs >> store op >> store rhs
     store (HsParTy _ t) = store t
     store (HsKindSig _ t k) = store t >> store k
     store (HsBangTy _ _ t) = store t
@@ -135,16 +139,20 @@ instance IsGhcPass p => HaskellAst (HsType (GhcPass p)) where
     store _ = return ()
 
 instance IsGhcPass p => HaskellAst (HsTyVarBndr (GhcPass p)) where
-    store (UserTyVar _ id) = storeName @p Define id
+    store (UserTyVar _ id) = defining $ store id
     store (KindedTyVar _ id kind) = do
-        storeName @p Define id
+        defining $ store id
         store kind -- kinds are just types
     store (XTyVarBndr _) = return ()
 
 instance IsGhcPass p => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) where
     store (FunBind _ id matches _ _) = do
-        storeName @p Define id
+        defining $ store id
         store matches
+    store (PatBind _ lhs rhs _) = store lhs >> store rhs
+    store (VarBind {}) = return () -- introduced by type checker
+    store (AbsBinds {}) = return () -- introduced by type checker
+    store (PatSynBind _ bind) = store bind
     store _ = return () -- TODO
 
 instance (IsGhcPass p, HaskellAst a) => HaskellAst (MatchGroup (GhcPass p) a) where 
@@ -168,7 +176,7 @@ instance IsGhcPass p => HaskellAst (HsLocalBinds (GhcPass p)) where
     store _ = return () -- TODO
 
 instance IsGhcPass p => HaskellAst (HsExpr (GhcPass p)) where 
-    store (HsVar _ id) = storeName @p Use id
+    store (HsVar _ id) = store id
     -- store (HsConLikeOut _ _) = error "Not supported: HsConLikeOut"
     store (HsLam _ mg) = store mg
     store (HsLamCase _ mg) = store mg
@@ -203,7 +211,7 @@ instance IsGhcPass p => HaskellAst (HsExpr (GhcPass p)) where
     -- store (HsArrForm {}) = error "Not supported: HsArrForm" -- TODO
     store (HsBinTick _ _ _ e) = store e
     store (HsTickPragma _ _ _ _ e) = store e
-    store (EAsPat _ at e) = storeName @p Define at >> store e
+    store (EAsPat _ at e) = defining (store at) >> store e
     store (EViewPat _ e1 e2) = store e1 >> store e2
     store (ELazyPat _ e) = store e
     store (HsWrap _ _ e) = store e
@@ -231,9 +239,9 @@ instance (IsGhcPass p, HaskellAst a) => HaskellAst (StmtLR (GhcPass p) (GhcPass 
     store _ = return ()
 
 instance IsGhcPass p => HaskellAst (Pat (GhcPass p)) where 
-    store (VarPat _ id) = storeName @p Define id
+    store (VarPat _ id) = defining $ store id
     store (LazyPat _ pat) = store pat
-    store (AsPat _ as pat) = storeName @p Define as >> store pat
+    store (AsPat _ as pat) = defining (store as) >> store pat
     store (ParPat _ pat) = store pat
     store (BangPat _ pat) = store pat
     store (ListPat _ pats) = store pats
@@ -250,6 +258,19 @@ instance IsGhcPass p => HaskellAst (Pat (GhcPass p)) where
 instance IsGhcPass p => HaskellAst (HsTupArg (GhcPass p)) where 
     store (Present _ e) = store e
     store _ = return ()
+
+instance (HaskellAst a, HaskellAst r) => HaskellAst (HsConDetails a r) where 
+    store (PrefixCon args) = store args
+    store (RecCon r) = store r
+    store (InfixCon a1 a2) = store a1 >> store a2
+
+instance IsGhcPass p => HaskellAst (PatSynBind (GhcPass p) (GhcPass p)) where 
+    store (PSB _ id args rhs _) = defining (store id) >> store args >> store rhs
+    store _ = return ()
+
+instance HaskellAst a => HaskellAst (RecordPatSynField a) where 
+    store (RecordPatSynField selector var) = defining (store selector) >> defining (store var)
+
 
 storeIdNames :: Bool -> Located (IdP GhcRn) -> StoreM ()
 storeIdNames defined (L (RealSrcSpan span) id) = do
