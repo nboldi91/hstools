@@ -5,7 +5,6 @@
 module Language.Haskell.HsTools.Plugin where
 
 import Control.Monad.IO.Class
-import System.IO
 import Control.Monad
 import System.Directory
 import System.FilePath
@@ -18,7 +17,6 @@ import HscTypes
 import HsDecls
 import HsExtension
 import TcRnTypes
-import Outputable
 import Module
 import FastString
 import SrcLoc
@@ -34,8 +32,9 @@ plugin = defaultPlugin
     }
 
 withDB :: MonadIO m => [CommandLineOption] -> (Connection -> m a) -> m a
+withDB [] _ = error "Cannot connect to DB, no connection string"
 withDB (connectionString:_) action = do
-    homeDir <- liftIO getHomeDirectory
+    -- homeDir <- liftIO getHomeDirectory
     -- liftIO $ writeFile (homeDir </> "hstools.log") $ "Connecting to DB with '" ++ connectionString ++ "'"
     conn <- liftIO (connectPostgreSQL (BS.pack connectionString))
     action conn
@@ -69,6 +68,7 @@ checkCleanDBFilepath conn filePath = do
                         cleanModuleFromDB conn filePath >> return True
                 else do liftIO $ putStrLn $ "File " ++ filePath ++ " is processed and up to date "
                         return False
+        _ -> cleanModuleFromDB conn filePath >> return True
     if needsUpdate
         then Just . head . head <$> query conn "INSERT INTO modules (filePath, modifiedTime) VALUES (?, ?) RETURNING moduleId" (filePath, roundedModificationTime)
         else return Nothing
@@ -102,11 +102,11 @@ initializeTables conn = mapM_ (execute_ conn)
     , "CREATE INDEX IF NOT EXISTS index_names_range ON names (startRow, endRow, startColumn, endColumn);"
     ]
 
-parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule	
+parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction _ _ mod = do
     return mod
 
-renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)	
+renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction clOpts env group = withDB clOpts $ \conn -> do
     liftIO $ withTransaction conn $ do
         initializeTables conn

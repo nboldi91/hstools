@@ -35,6 +35,9 @@ library:
     - directory
     - bytestring
     - time
+  ghc-options:
+    - -W
+    - -Werror
 
 executables:
   hstools-exe:
