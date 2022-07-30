@@ -285,7 +285,7 @@ instance IsGhcPass p => HaskellAst (Pat (GhcPass p)) where
     store (ListPat _ pats) = store pats
     store (TuplePat _ pats _) = store pats
     store (SumPat _ pat _ _) = store pat
-    store (ConPatIn n _) = store n
+    store (ConPatIn n details) = store n >> store details
     store (ConPatOut {}) = return () -- after type checking
     store (ViewPat _ e pat) = store e >> store pat
     store (SplicePat _ sp) = store sp
@@ -328,7 +328,7 @@ instance IsGhcPass p => HaskellAst (ConDeclField (GhcPass p)) where
     store (XConDeclField {}) = return ()
 
 instance IsGhcPass p => HaskellAst (FieldOcc (GhcPass p)) where 
-    store (FieldOcc selector _) = defining (store selector)
+    store (FieldOcc selector _) = store selector
     store (XFieldOcc {}) = return ()
 
 instance IsGhcPass p => HaskellAst (AmbiguousFieldOcc (GhcPass p)) where 
