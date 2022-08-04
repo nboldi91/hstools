@@ -7,7 +7,6 @@ module Language.Haskell.HsTools.Plugin where
 import Control.Monad.IO.Class
 import Control.Monad
 import System.Directory
-import System.FilePath
 import Database.PostgreSQL.Simple
 import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock
@@ -18,8 +17,6 @@ import HsDecls
 import HsExtension
 import TcRnTypes
 import Module
-import FastString
-import SrcLoc
 
 import Language.Haskell.HsTools.PersistNameInfo
 
@@ -39,39 +36,48 @@ withDB (connectionString:_) action = do
     conn <- liftIO (connectPostgreSQL (BS.pack connectionString))
     action conn
 
+cleanAndRecordModule :: Connection -> ModSummary -> IO (Maybe Int)
+cleanAndRecordModule conn ms = do
+    let Module unitId moduleName = ms_mod ms
+    case ml_hs_file $ ms_location ms of
+        Just filePath -> do
+            fullPath <- canonicalizePath filePath
+            modificationTime <- getModificationTime fullPath
+            let roundedModificationTime = roundUTCTime modificationTime
+            res <- query conn "SELECT modifiedTime FROM modules WHERE filePath = ?" (Only fullPath)
+            needsUpdate <- case res of
+                [] -> do
+                    liftIO $ putStrLn $ "File " ++ fullPath ++ " not processed yet"
+                    return True
+                [dbModDate]:_ ->
+                    if dbModDate < roundedModificationTime
+                        then do liftIO $ putStrLn $ "File " ++ fullPath ++ " is processed but not up to date, cleaning" ++ "  " ++ show dbModDate ++ "   " ++ show roundedModificationTime 
+                                cleanModuleFromDB conn fullPath >> return True
+                        else do liftIO $ putStrLn $ "File " ++ fullPath ++ " is processed and up to date "
+                                return False
+                _ -> cleanModuleFromDB conn fullPath >> return True
+            if needsUpdate
+                then Just . head . head <$>
+                    query conn "INSERT INTO modules (filePath, modifiedTime, moduleName, unitId, loadingState) VALUES (?, ?, ?, ?, ?) RETURNING moduleId"
+                        (fullPath, roundedModificationTime, moduleNameString moduleName, unitIdString unitId, 0 :: Int)
+                else return Nothing
+        Nothing -> return Nothing
 
--- needsSavingMS :: Connection -> ModSummary -> IO (Maybe Int)
--- needsSavingMS conn (ml_hs_file . ms_location -> Just hsFilePath) = 
---     checkCleanDBFilepath conn hsFilePath
--- needsSavingMS _ _ = return True
-    
-needsSavingGblEnv :: Connection -> TcGblEnv -> IO (Maybe (String, Int))
-needsSavingGblEnv conn env = do
-    currentDir <- getCurrentDirectory
-    let filePath = normalise (currentDir </> localFilePath)
-    fmap (fmap (modName ,)) $ checkCleanDBFilepath conn filePath
-    where
-        localFilePath = unpackFS $ srcSpanFile $ tcg_top_loc env
-        modName = moduleNameString $ moduleName $ tcg_mod env
+getModuleIdAndState :: Connection -> Module -> IO (Maybe (Int, LoadingState))
+getModuleIdAndState conn (Module unitId moduleName) = do
+    res <- query conn
+        "SELECT moduleId, loadingState FROM modules WHERE moduleName = ? AND unitId = ?"
+        (moduleNameString moduleName, unitIdString unitId)
+    case res of
+        [(moduleId, loadingState)] -> return $ Just (moduleId, toEnum loadingState)
+        _ -> return Nothing
 
-checkCleanDBFilepath :: Connection -> FilePath -> IO (Maybe Int)
-checkCleanDBFilepath conn filePath = do
-    modificationTime <- getModificationTime filePath
-    let roundedModificationTime = roundUTCTime modificationTime
-    res <- query conn "SELECT modifiedTime FROM modules WHERE filePath = ?" (Only filePath)
-    needsUpdate <- case res of
-        [] -> do liftIO $ putStrLn $ "File " ++ filePath ++ " not processed yet"
-                 return True
-        [dbModDate]:_ ->
-            if dbModDate < roundedModificationTime
-                then do liftIO $ putStrLn $ "File " ++ filePath ++ " is processed but not up to date, cleaning" ++ "  " ++ show dbModDate ++ "   " ++ show roundedModificationTime 
-                        cleanModuleFromDB conn filePath >> return True
-                else do liftIO $ putStrLn $ "File " ++ filePath ++ " is processed and up to date "
-                        return False
-        _ -> cleanModuleFromDB conn filePath >> return True
-    if needsUpdate
-        then Just . head . head <$> query conn "INSERT INTO modules (filePath, modifiedTime) VALUES (?, ?) RETURNING moduleId" (filePath, roundedModificationTime)
-        else return Nothing
+updateLoadingState :: Connection -> Int -> LoadingState -> IO ()
+updateLoadingState conn moduleId newLoadingState =
+    void $ execute conn
+        "UPDATE modules SET loadingState = ? WHERE moduleId = ?"
+        (fromEnum newLoadingState, moduleId)
+
 
 roundUTCTime :: UTCTime -> UTCTime
 roundUTCTime (UTCTime day time) = UTCTime day (picosecondsToDiffTime $ round $ diffTimeToPicoseconds time)
@@ -87,7 +93,10 @@ initializeTables conn = mapM_ (execute_ conn)
         \(moduleId INT GENERATED ALWAYS AS IDENTITY\
         \,PRIMARY KEY(moduleId)\
         \,filePath TEXT UNIQUE\
+        \,unitId TEXT\
+        \,moduleName TEXT\
         \,modifiedTime TIMESTAMP WITH TIME ZONE\
+        \,loadingState INT\
         \);"
     , "CREATE TABLE IF NOT EXISTS names \
         \(module INT\
@@ -102,18 +111,29 @@ initializeTables conn = mapM_ (execute_ conn)
     , "CREATE INDEX IF NOT EXISTS index_names_range ON names (startRow, endRow, startColumn, endColumn);"
     ]
 
+data LoadingState = NotLoaded | NamesLoaded
+    deriving (Show, Enum)
+
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-parsedAction _ _ mod = do
+parsedAction clOpts ms mod = liftIO $ do
+    withDB clOpts $ \conn -> do
+        initializeTables conn
+        cleanAndRecordModule conn ms
     return mod
 
 renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction clOpts env group = withDB clOpts $ \conn -> do
     liftIO $ withTransaction conn $ do
-        initializeTables conn
-        moduleIdIfNeedToSave <- needsSavingGblEnv conn env
-        case moduleIdIfNeedToSave of
-            Just moduleNameAndId -> storeNames conn moduleNameAndId group
-            Nothing -> return ()
+        let mod = tcg_mod env
+            modName = moduleNameString $ moduleName mod
+        moduleIdAndState <- getModuleIdAndState conn mod
+        case moduleIdAndState of
+            Just (modId, NotLoaded) -> do 
+                storeNames conn (modName, modId) group
+                void $ updateLoadingState conn modId NamesLoaded
+            Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
+            Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
+        
     --liftIO $ putStrLn $ showSDocUnsafe $ ppr group
     return (env, group)
 
