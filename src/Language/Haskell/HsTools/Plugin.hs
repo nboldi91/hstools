@@ -88,28 +88,37 @@ cleanModuleFromDB conn filePath =
     void $ execute conn "DELETE FROM modules WHERE filePath = ?" [filePath]
 
 initializeTables :: Connection -> IO ()
-initializeTables conn = mapM_ (execute_ conn) 
-    [ "CREATE TABLE IF NOT EXISTS modules \
-        \(moduleId INT GENERATED ALWAYS AS IDENTITY\
-        \,PRIMARY KEY(moduleId)\
-        \,filePath TEXT UNIQUE\
-        \,unitId TEXT\
-        \,moduleName TEXT\
-        \,modifiedTime TIMESTAMP WITH TIME ZONE\
-        \,loadingState INT\
-        \);"
-    , "CREATE TABLE IF NOT EXISTS names \
-        \(module INT\
-        \,CONSTRAINT fk_module FOREIGN KEY(module) REFERENCES modules(moduleId) ON DELETE CASCADE\
-        \,isDefined BOOL\
-        \,name TEXT\
-        \,startRow INT\
-        \,startColumn INT\
-        \,endRow INT\
-        \,endColumn INT\
-        \);"
-    , "CREATE INDEX IF NOT EXISTS index_names_range ON names (startRow, endRow, startColumn, endColumn);"
-    ]
+initializeTables conn = do 
+    tables <- query_ conn "SELECT tablename FROM pg_tables"
+    indices <- query_ conn "SELECT indexname FROM pg_indexes"
+    let allExistingDefs = map head $ tables ++ indices
+    mapM_ (execute_ conn) (map snd . filter ((`notElem` allExistingDefs) . fst) $ tableDefs)
+  where
+    tableDefs :: [(String, Query)]
+    tableDefs =
+      [ ("modules", "CREATE TABLE modules \
+          \(moduleId INT GENERATED ALWAYS AS IDENTITY\
+          \,PRIMARY KEY(moduleId)\
+          \,filePath TEXT UNIQUE\
+          \,unitId TEXT\
+          \,moduleName TEXT\
+          \,modifiedTime TIMESTAMP WITH TIME ZONE\
+          \,loadingState INT\
+          \);"
+      )
+      , ("names", "CREATE TABLE names \
+          \(module INT\
+          \,CONSTRAINT fk_module FOREIGN KEY(module) REFERENCES modules(moduleId) ON DELETE CASCADE\
+          \,isDefined BOOL\
+          \,name TEXT\
+          \,startRow INT\
+          \,startColumn INT\
+          \,endRow INT\
+          \,endColumn INT\
+          \);"
+      )
+      , ("index_names_range", "CREATE INDEX index_names_range ON names (startRow, endRow, startColumn, endColumn);")
+      ]
 
 data LoadingState = NotLoaded | NamesLoaded
     deriving (Show, Enum)
