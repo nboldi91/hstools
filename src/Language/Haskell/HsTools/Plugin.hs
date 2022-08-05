@@ -97,8 +97,7 @@ initializeTables conn = do
     tableDefs :: [(String, Query)]
     tableDefs =
       [ ("modules", "CREATE TABLE modules \
-          \(moduleId INT GENERATED ALWAYS AS IDENTITY\
-          \,PRIMARY KEY(moduleId)\
+          \(moduleId SERIAL PRIMARY KEY\
           \,filePath TEXT UNIQUE\
           \,unitId TEXT\
           \,moduleName TEXT\
@@ -106,22 +105,34 @@ initializeTables conn = do
           \,loadingState INT\
           \);"
       )
-      , ("names", "CREATE TABLE names \
+      , ("ast", "CREATE TABLE ast \
           \(module INT\
-          \,CONSTRAINT fk_module FOREIGN KEY(module) REFERENCES modules(moduleId) ON DELETE CASCADE\
-          \,isDefined BOOL\
-          \,name TEXT\
+          \,CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId) ON DELETE CASCADE\
+          \,astId SERIAL PRIMARY KEY\
           \,startRow INT\
           \,startColumn INT\
           \,endRow INT\
           \,endColumn INT\
           \);"
       )
-      , ("index_names_range", "CREATE INDEX index_names_range ON names (startRow, endRow, startColumn, endColumn);")
+      , ("names", "CREATE TABLE names \
+          \(astNode INT\
+          \,CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
+          \,isDefined BOOL\
+          \,name TEXT\
+          \);"
+      )
+      , ("types", "CREATE TABLE types \
+          \(astNode INT\
+          \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
+          \,type TEXT\
+          \);"
+      )
+      , ("index_ast_range", "CREATE INDEX index_ast_range ON ast (startRow, endRow, startColumn, endColumn);")
       ]
 
-data LoadingState = NotLoaded | NamesLoaded
-    deriving (Show, Enum)
+data LoadingState = NotLoaded | NamesLoaded | TypesLoaded
+    deriving (Show, Enum, Eq, Ord)
 
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
@@ -132,21 +143,28 @@ parsedAction clOpts ms mod = liftIO $ do
 
 renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction clOpts env group = withDB clOpts $ \conn -> do
-    liftIO $ withTransaction conn $ do
-        let mod = tcg_mod env
-            modName = moduleNameString $ moduleName mod
-        moduleIdAndState <- getModuleIdAndState conn mod
-        case moduleIdAndState of
-            Just (modId, NotLoaded) -> do 
-                storeNames conn (modName, modId) group
-                void $ updateLoadingState conn modId NamesLoaded
-            Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
-            Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
-        
-    --liftIO $ putStrLn $ showSDocUnsafe $ ppr group
-    return (env, group)
+  liftIO $ withTransaction conn $ do
+    let mod = tcg_mod env
+        modName = moduleNameString $ moduleName mod
+    moduleIdAndState <- getModuleIdAndState conn mod
+    case moduleIdAndState of
+      Just (modId, status) | status < NamesLoaded -> do 
+        storeNames conn (modName, modId) group
+        void $ updateLoadingState conn modId NamesLoaded
+      Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
+      Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
+  return (env, group)
 
 typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-typeCheckAction _ _ env = do
-    --liftIO $ putStrLn $ showSDocUnsafe $ ppr (tcg_binds env)
-    return env
+typeCheckAction clOpts _ env = withDB clOpts $ \conn -> do
+  liftIO $ withTransaction conn $ do
+    let mod = tcg_mod env
+        modName = moduleNameString $ moduleName mod
+    moduleIdAndState <- getModuleIdAndState conn mod
+    case moduleIdAndState of
+      Just (modId, status) | status < TypesLoaded -> do 
+        storeTypes conn (modName, modId) env
+        void $ updateLoadingState conn modId NamesLoaded
+      Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
+      Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
+  return env
