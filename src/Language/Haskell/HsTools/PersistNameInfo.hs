@@ -76,7 +76,7 @@ storeTypes isVerbose conn (moduleName, moduleId) env = do
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
-    ((), types) <- runWriterT (runReaderT storeEnv (StoreContext moduleName noSrcSpan False astNodeMap))
+    ((), types) <- runWriterT (runReaderT storeEnv (StoreContext moduleName noSrcSpan False astNodeMap Root))
     when isVerbose $ do
       putStrLn "### Storing types:"
       mapM_ print types
@@ -105,7 +105,7 @@ persistTypes conn types = void $ executeMany conn
 
 storeNames :: Bool -> Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
 storeNames isVerbose conn (moduleName, moduleId) gr = do
-    ((), names) <- runWriterT (runReaderT (store gr) (StoreContext moduleName noSrcSpan False M.empty))
+    ((), names) <- runWriterT (runReaderT (store gr) (StoreContext moduleName noSrcSpan False M.empty Root))
     when isVerbose $ do
       putStrLn "### Storing names:"
       mapM_ print names
@@ -131,7 +131,11 @@ data StoreContext = StoreContext
   , scSpan :: SrcSpan
   , scDefining :: Bool
   , scNodeMap :: M.Map NodePos Int
+  , scDefinition :: DefinitionContext
   }
+
+data DefinitionContext = Root | InstanceDefinition
+  deriving Eq
 
 type IsGhcPass p r =
   ( HaskellAst Name r -- skip
@@ -149,6 +153,9 @@ defining = local (\l -> l { scDefining = True })
 
 withSpan :: SrcSpan -> StoreM r a -> StoreM r a
 withSpan span = local (\l -> l { scSpan = span })
+
+definitionContext :: DefinitionContext -> StoreM r a -> StoreM r a
+definitionContext def = local (\l -> l { scDefinition = def })
 
 class HaskellAst a r where
     store :: a -> StoreM r ()
@@ -262,10 +269,14 @@ instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
 
 instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
     store (FunBind _ id matches _ _) = do
-        defining $ store id
-        store matches
+      isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
+      if isInstanceDefinition then store id else defining $ store id
+      store matches
     store (PatBind _ lhs rhs _) = store lhs >> store rhs
-    store (VarBind _ id rhs _) = store id >> store rhs 
+    store (VarBind _ id rhs _) = do
+      isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
+      if isInstanceDefinition then store id else defining $ store id
+      store rhs 
     store (AbsBinds _ _ _ _ _ binds _) = store binds
     store (PatSynBind _ bind) = store bind
     store (XHsBindsLR {}) = return ()
@@ -481,7 +492,7 @@ instance IsGhcPass p r => HaskellAst (TyClDecl (GhcPass p)) r where
     store (XTyClDecl {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (InstDecl (GhcPass p)) r where 
-    store (ClsInstD _ d) = store d
+    store (ClsInstD _ d) = definitionContext InstanceDefinition $ store d
     store (DataFamInstD _ d) = store d
     store (TyFamInstD _ d) = store d
     store (XInstDecl {}) = return ()
