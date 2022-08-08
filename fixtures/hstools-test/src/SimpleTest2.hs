@@ -6,7 +6,7 @@ import SimpleTest
 foo :: String
 foo = "foo"
 
-$generateDef
+$(generateDef a)
 
 bar :: String
 bar = "bar"

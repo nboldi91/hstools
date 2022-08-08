@@ -11,11 +11,14 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TupleSections #-}
 
 module Language.Haskell.HsTools.PersistNameInfo where
 import Control.Monad.Writer
 import Control.Monad.Reader
 import qualified Data.Map as M
+import Data.Maybe
 
 import HsDecls
 import HsExtension
@@ -68,6 +71,13 @@ data TypeRecord = TypeRecord
   , trType :: String
   } deriving Show
 
+data NameAndTypeRecord = NameAndTypeRecord
+  { ntrName :: String
+  , ntrIsDefined :: Bool
+  , ntrType :: Maybe String
+  , ntrPos :: NodePos
+  } deriving Show
+
 -- TODO: look up by the name first and then by the location
 
 storeTypes :: Bool -> Connection -> (String, Int) -> TcGblEnv -> IO ()
@@ -76,7 +86,7 @@ storeTypes isVerbose conn (moduleName, moduleId) env = do
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
-    ((), types) <- runWriterT (runReaderT storeEnv (StoreContext moduleName noSrcSpan False astNodeMap Root))
+    ((), types) <- runWriterT (runReaderT storeEnv (defaultStoreContext moduleName){ scNodeMap = astNodeMap })
     when isVerbose $ do
       putStrLn "### Storing types:"
       mapM_ print types
@@ -105,7 +115,7 @@ persistTypes conn types = void $ executeMany conn
 
 storeNames :: Bool -> Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
 storeNames isVerbose conn (moduleName, moduleId) gr = do
-    ((), names) <- runWriterT (runReaderT (store gr) (StoreContext moduleName noSrcSpan False M.empty Root))
+    ((), names) <- runWriterT (runReaderT (store gr) (defaultStoreContext moduleName))
     when isVerbose $ do
       putStrLn "### Storing names:"
       mapM_ print names
@@ -124,14 +134,52 @@ persistNames conn moduleId names = do
     convertLocation (NameRecord _ _ (NodePos startRow startColumn endRow endColumn))
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
+storeTHNamesAndTypes :: Bool -> Connection -> (String, Int) -> LHsExpr GhcTc -> IO ()
+storeTHNamesAndTypes isVerbose conn (moduleName, moduleId) gr = do
+    ((), namesAndTypes) <- runWriterT (runReaderT (store gr) 
+      ((defaultStoreContext moduleName) {- { scForceStoringNames = True } -}))
+    when isVerbose $ do
+      putStrLn "### Storing names and types for TH:"
+      mapM_ print namesAndTypes
+    persistNamesAndTypes conn moduleId namesAndTypes
+
+persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
+persistNamesAndTypes conn moduleId namesAndTypes = do
+    astIds <- returning conn
+      "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
+      (map convertLocation namesAndTypes)
+    void $ executeMany conn
+      "INSERT INTO names (astNode, name, isDefined) VALUES (?, ?, ?)"
+      (map convertName (namesAndTypes `zip` concat astIds))
+    void $ executeMany conn
+      "INSERT INTO types (astNode, type) VALUES (?, ?)"
+      (catMaybes $ map convertType (namesAndTypes `zip` concat astIds))
+  where
+    convertName (NameAndTypeRecord { ntrName, ntrIsDefined }, id) = (id :: Int, ntrName, ntrIsDefined)
+    convertType (NameAndTypeRecord { ntrType }, id) = fmap (id :: Int,) ntrType
+    convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
+      = (moduleId, startRow, startColumn, endRow, endColumn)
+
 type StoreM r = ReaderT StoreContext (WriterT [r] IO)
 
 data StoreContext = StoreContext
   { scModuleName :: String
   , scSpan :: SrcSpan
   , scDefining :: Bool
-  , scNodeMap :: M.Map NodePos Int
+  , scNodeMap :: M.Map NodePos Int -- used to associate types with locations
   , scDefinition :: DefinitionContext
+  -- , scForceStoringNames :: Bool
+  }
+
+defaultStoreContext :: String -> StoreContext
+defaultStoreContext moduleName
+  = StoreContext
+    { scModuleName = moduleName
+    , scSpan = noSrcSpan
+    , scDefining = False
+    , scNodeMap = M.empty
+    , scDefinition = Root
+    -- , scForceStoringNames = False
   }
 
 data DefinitionContext = Root | InstanceDefinition
@@ -191,6 +239,47 @@ instance HaskellAst Id TypeRecord where
           Just astNode -> tell [ TypeRecord astNode typeStr ]
           Nothing -> return () -- we don't have this location in the AST
       Nothing -> return () -- no location for the original id
+
+instance HaskellAst Id NameAndTypeRecord where
+  store id = do 
+    span <- asks scSpan
+    case srcSpanToNodePos span of
+      Just np -> do
+        currentModuleName <- asks scModuleName
+        defined <- asks scDefining
+        let typeStr = showSDocUnsafe $ ppr $ varType id
+        let modName = nameModule_maybe (Var.varName id)
+            fullName = case modName of
+                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
+                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
+            record = NameAndTypeRecord
+                { ntrName = fullName
+                , ntrIsDefined = defined
+                , ntrType = Just typeStr
+                , ntrPos = np
+                }
+        tell [record] 
+      Nothing -> return ()
+
+instance HaskellAst Name NameAndTypeRecord where
+  store id = do 
+    span <- asks scSpan
+    case srcSpanToNodePos span of
+      Just np -> do
+        currentModuleName <- asks scModuleName
+        defined <- asks scDefining
+        let modName = nameModule_maybe id
+            fullName = case modName of
+                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
+                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
+            record = NameAndTypeRecord
+                { ntrName = fullName
+                , ntrIsDefined = defined
+                , ntrType = Nothing
+                , ntrPos = np
+                }
+        tell [record] 
+      Nothing -> return ()
 
 instance HaskellAst Type r where
   store _ = return ()

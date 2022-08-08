@@ -17,6 +17,8 @@ import HsDecls
 import HsExtension
 import TcRnTypes
 import Module
+import HsExpr
+import IOEnv
 
 import Language.Haskell.HsTools.PersistNameInfo
 
@@ -26,6 +28,7 @@ plugin = defaultPlugin
     , renamedResultAction = renamedAction
     , typeCheckResultAction = typeCheckAction
     , pluginRecompile = const $ return NoForceRecompile
+    , spliceRunAction = spliceAction
     }
 
 withDB :: MonadIO m => [CommandLineOption] -> (Connection -> m a) -> m a
@@ -154,18 +157,31 @@ renamedAction clOpts env group = withDB clOpts $ \conn -> do
   return (env, group)
 
 typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-typeCheckAction clOpts _ env = withDB clOpts $ \conn -> do
+typeCheckAction clOpts _ env = withDB clOpts $ \conn -> liftIO $ withTransaction conn $ do
+  let mod = tcg_mod env
+      modName = moduleNameString $ moduleName mod
+  moduleIdAndState <- getModuleIdAndState conn mod
+  case moduleIdAndState of
+    Just (modId, status) | status < TypesLoaded -> do 
+      storeTypes (isVerbose clOpts) conn (modName, modId) env
+      void $ updateLoadingState conn modId NamesLoaded
+    Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
+    Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
+  return env
+
+spliceAction :: [CommandLineOption] -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+spliceAction clOpts expr = withDB clOpts $ \conn -> do
+  env <- getEnv
+  let mod = tcg_mod $ env_gbl env
+      modName = moduleNameString $ moduleName mod
   liftIO $ withTransaction conn $ do
-    let mod = tcg_mod env
-        modName = moduleNameString $ moduleName mod
     moduleIdAndState <- getModuleIdAndState conn mod
     case moduleIdAndState of
-      Just (modId, status) | status < TypesLoaded -> do 
-        storeTypes (isVerbose clOpts) conn (modName, modId) env
-        void $ updateLoadingState conn modId NamesLoaded
+      Just (modId, status) | status <= NamesLoaded -> do 
+        storeTHNamesAndTypes (isVerbose clOpts) conn (modName, modId) expr
       Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
       Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
-  return env
+    return expr
 
 isVerbose :: [CommandLineOption] -> Bool
 isVerbose (_:"verbose":_) = True

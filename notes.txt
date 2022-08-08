@@ -1,8 +1,33 @@
-Splices not handled
 Multi-name bindings (field and value for puns)
 
+Don't store definitions that are generated from a TH expression. TH expression itself is stored now.
+
+Now signatures and function implementations are both considered definitions, making GoToDefinition slower.
+
+What is a definition anyway?
+ - For normal functions
+ - For class functions / instance definitions
+
+Multi-case function definitions not parsed:
+
+f :: Int -> Bool
+f 0 = ...
+f x = ...
+^ this is not stored
 
 Not working with Main module
 
-Parse stage: create a mod summary record, store module Id
-Rename stage: load the file path according to the module Id
+Extend storing types to things that are not bindings.
+
+---
+
+Future plans:
+ - Attach comments to names and show them in hovers
+ - Rename refactoring
+ - Detect compilation errors and show them in the IDE
+ - Auto-complete support
+  - Based on local and imported stuff
+  - Based on modules that could be imported
+  - Based on an indexing of a package universe
+ - Show a visual indication of the current file being up-to-date
+ - Try to keep things available even if the file is not up-to-date (at least track the position of the known elements)

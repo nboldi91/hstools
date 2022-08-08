@@ -3,5 +3,8 @@ module SimpleTest where
 
 import Language.Haskell.TH.Syntax (Dec, Q)
 
-generateDef :: Q [Dec]
-generateDef = [d| a = "a" |]
+generateDef :: String -> Q [Dec]
+generateDef str = [d| a = str |]
+
+a :: String
+a = "a"
