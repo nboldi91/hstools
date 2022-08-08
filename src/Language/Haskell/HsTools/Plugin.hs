@@ -31,8 +31,6 @@ plugin = defaultPlugin
 withDB :: MonadIO m => [CommandLineOption] -> (Connection -> m a) -> m a
 withDB [] _ = error "Cannot connect to DB, no connection string"
 withDB (connectionString:_) action = do
-    -- homeDir <- liftIO getHomeDirectory
-    -- liftIO $ writeFile (homeDir </> "hstools.log") $ "Connecting to DB with '" ++ connectionString ++ "'"
     conn <- liftIO (connectPostgreSQL (BS.pack connectionString))
     action conn
 
@@ -148,7 +146,7 @@ renamedAction clOpts env group = withDB clOpts $ \conn -> do
         modName = moduleNameString $ moduleName mod
     moduleIdAndState <- getModuleIdAndState conn mod
     case moduleIdAndState of
-      Just (modId, status) | status < NamesLoaded -> do 
+      Just (modId, status) | status <= NamesLoaded {- renaming can happen multiple times -} -> do 
         storeNames (isVerbose clOpts) conn (modName, modId) group
         void $ updateLoadingState conn modId NamesLoaded
       Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
