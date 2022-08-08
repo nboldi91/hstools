@@ -1,0 +1,25 @@
+name:                hstools-test
+version:             0.1.0.0
+github:              "githubuser/hstools-test"
+license:             BSD3
+author:              "Author name here"
+maintainer:          "example@example.com"
+copyright:           "2022 Author name here"
+description:         Please see the README on GitHub at <https://github.com/githubuser/hstools-test#readme>
+
+dependencies:
+- base >= 4.7 && < 5
+
+library:
+  source-dirs: src
+  exposed-modules:
+    - SimpleTest
+    - SimpleTest2
+  dependencies:
+    - template-haskell
+    - loch-th
+    - hstools
+  ghc-options: 
+    - -fplugin=Language.Haskell.HsTools.Plugin 
+    - -fplugin-opt=Language.Haskell.HsTools.Plugin:postgresql://saver:saver@127.0.0.1:5432/repo
+    - -fplugin-opt=Language.Haskell.HsTools.Plugin:verbose
