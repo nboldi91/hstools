@@ -1,6 +1,7 @@
-module SimpleTest (foo,bar) where
+module SimpleTest where
 
-foo x = x + 1 
+class C a where
+  c :: a
 
-bar :: Int
-bar = foo 3 
+instance C Bool where
+  c = False

@@ -1,0 +1,16 @@
+Splices not handled
+Multi-name bindings (field and value for puns)
+
+instance X y where
+  f = ...
+  f should not be defined
+
+store context
+  - here f is not a definition
+
+after a splice is in the code the definitions are not registered
+
+Not working with Main module
+
+Parse stage: create a mod summary record, store module Id
+Rename stage: load the file path according to the module Id

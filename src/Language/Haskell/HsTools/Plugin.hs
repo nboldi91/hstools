@@ -149,7 +149,7 @@ renamedAction clOpts env group = withDB clOpts $ \conn -> do
     moduleIdAndState <- getModuleIdAndState conn mod
     case moduleIdAndState of
       Just (modId, status) | status < NamesLoaded -> do 
-        storeNames conn (modName, modId) group
+        storeNames (isVerbose clOpts) conn (modName, modId) group
         void $ updateLoadingState conn modId NamesLoaded
       Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
       Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
@@ -163,8 +163,12 @@ typeCheckAction clOpts _ env = withDB clOpts $ \conn -> do
     moduleIdAndState <- getModuleIdAndState conn mod
     case moduleIdAndState of
       Just (modId, status) | status < TypesLoaded -> do 
-        storeTypes conn (modName, modId) env
+        storeTypes (isVerbose clOpts) conn (modName, modId) env
         void $ updateLoadingState conn modId NamesLoaded
       Nothing -> liftIO $ putStrLn $ "Module is not in the DB: " ++ modName
       Just _ -> liftIO $ putStrLn $ "Skipping module: " ++ modName
   return env
+
+isVerbose :: [CommandLineOption] -> Bool
+isVerbose (_:"verbose":_) = True
+isVerbose _ = False

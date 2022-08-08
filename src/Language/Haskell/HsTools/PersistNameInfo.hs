@@ -40,14 +40,17 @@ data NameRecord = NameRecord
   { nmName :: String
   , nmIsDefined :: Bool
   , nmPos :: NodePos
-  }
+  } deriving Show
 
 data NodePos = NodePos
   { npStartRow :: Int
   , npStartCol :: Int
   , npEndRow :: Int
   , npEndCol :: Int
-  } deriving (Eq, Ord, Show)
+  } deriving (Eq, Ord)
+
+instance Show NodePos where
+  show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec
 
 srcSpanToNodePos :: SrcSpan -> Maybe NodePos
 srcSpanToNodePos (RealSrcSpan span) = Just $ realSrcSpanToNodePos span
@@ -67,13 +70,16 @@ data TypeRecord = TypeRecord
 
 -- TODO: look up by the name first and then by the location
 
-storeTypes :: Connection -> (String, Int) -> TcGblEnv -> IO ()
-storeTypes conn (moduleName, moduleId) env = do
+storeTypes :: Bool -> Connection -> (String, Int) -> TcGblEnv -> IO ()
+storeTypes isVerbose conn (moduleName, moduleId) env = do
     astNodes <- query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
     ((), types) <- runWriterT (runReaderT storeEnv (StoreContext moduleName noSrcSpan False astNodeMap))
+    when isVerbose $ do
+      putStrLn "### Storing types:"
+      mapM_ print types
     persistTypes conn types
   where
     storeEnv = do
@@ -97,9 +103,12 @@ persistTypes conn types = void $ executeMany conn
     (map convertType types)
   where convertType (TypeRecord astNode typ) = (astNode, typ)
 
-storeNames :: Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
-storeNames conn (moduleName, moduleId) gr = do
+storeNames :: Bool -> Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
+storeNames isVerbose conn (moduleName, moduleId) gr = do
     ((), names) <- runWriterT (runReaderT (store gr) (StoreContext moduleName noSrcSpan False M.empty))
+    when isVerbose $ do
+      putStrLn "### Storing names:"
+      mapM_ print names
     persistNames conn moduleId names
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
