@@ -12,6 +12,7 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock
 import Data.Char (toLower)
 
+import qualified FastString as FS
 import Plugins
 import HscTypes
 import HsDecls
@@ -20,6 +21,7 @@ import TcRnTypes
 import Module
 import HsExpr
 import IOEnv
+import SrcLoc
 
 import Language.Haskell.HsTools.PersistNameInfo
 
@@ -65,11 +67,9 @@ cleanAndRecordModule conn ms = do
                 else return Nothing
         Nothing -> return Nothing
 
-getModuleIdAndState :: Connection -> Module -> IO (Maybe (Int, LoadingState))
-getModuleIdAndState conn (Module unitId moduleName) = do
-    res <- query conn
-        "SELECT moduleId, loadingState FROM modules WHERE moduleName = ? AND unitId = ?"
-        (moduleNameString moduleName, unitIdString unitId)
+getModuleIdAndState :: Connection -> FilePath -> IO (Maybe (Int, LoadingState))
+getModuleIdAndState conn fp = do
+    res <- query conn "SELECT moduleId, loadingState FROM modules WHERE filePath = ?" (Only fp)
     case res of
         [(moduleId, loadingState)] -> return $ Just (moduleId, toEnum loadingState)
         _ -> return Nothing
@@ -156,7 +156,9 @@ renamedAction clOpts env group = withDB clOpts $ \conn -> do
   liftIO $ withTransaction conn $ do
     let mod = tcg_mod env
         modName = moduleNameString $ moduleName mod
-    moduleIdAndState <- getModuleIdAndState conn mod
+        localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc env
+    fullFilePath <- liftIO $ canonicalizePath localFilePath
+    moduleIdAndState <- getModuleIdAndState conn fullFilePath
     case moduleIdAndState of
       Just (modId, status) | status <= NamesLoaded {- renaming can happen multiple times -} -> do 
         storeNames (isVerbose clOpts) conn (modName, modId) group
@@ -169,7 +171,9 @@ typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 typeCheckAction clOpts _ env = withDB clOpts $ \conn -> liftIO $ withTransaction conn $ do
   let mod = tcg_mod env
       modName = moduleNameString $ moduleName mod
-  moduleIdAndState <- getModuleIdAndState conn mod
+      localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc env
+  fullFilePath <- liftIO $ canonicalizePath localFilePath
+  moduleIdAndState <- getModuleIdAndState conn fullFilePath
   case moduleIdAndState of
     Just (modId, status) | status < TypesLoaded -> do 
       storeTypes (isVerbose clOpts) conn (modName, modId) env
@@ -183,8 +187,10 @@ spliceAction clOpts expr = withDB clOpts $ \conn -> do
   env <- getEnv
   let mod = tcg_mod $ env_gbl env
       modName = moduleNameString $ moduleName mod
+      localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc $ env_gbl env
+  fullFilePath <- liftIO $ canonicalizePath localFilePath
   liftIO $ withTransaction conn $ do
-    moduleIdAndState <- getModuleIdAndState conn mod
+    moduleIdAndState <- getModuleIdAndState conn fullFilePath
     case moduleIdAndState of
       Just (modId, status) | status <= NamesLoaded -> do 
         storeTHNamesAndTypes (isVerbose clOpts) conn (modName, modId) expr

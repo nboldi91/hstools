@@ -4,8 +4,6 @@ What is a definition anyway?
  - For normal functions
  - For class functions / instance definitions
 
-Not working with Main module
-
 Extend storing types to things that are not bindings.
 
 ---
