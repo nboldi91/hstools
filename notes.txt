@@ -2,8 +2,6 @@ Multi-name bindings (field and value for puns)
 
 Now signatures and function implementations are both considered definitions, making GoToDefinition slower.
 
-Separate namespaces (for example data type and constructor name is not the same)
-
 What is a definition anyway?
  - For normal functions
  - For class functions / instance definitions

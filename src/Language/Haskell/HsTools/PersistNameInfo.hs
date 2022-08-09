@@ -43,6 +43,7 @@ import Database.PostgreSQL.Simple
 
 data NameRecord = NameRecord
   { nmName :: String
+  , nmNamespace :: Maybe Namespace
   , nmIsDefined :: Bool
   , nmPos :: NodePos
   } deriving Show
@@ -72,6 +73,18 @@ realSrcSpanToNodePos span
     start = realSrcSpanStart span
     end = realSrcSpanEnd span
 
+data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
+
+nameNamespace :: Name -> Maybe Namespace
+nameNamespace n 
+  | isTyVarName n = Just TyVarNS
+  | isTyConName n = Just TyConNS
+  | isDataConName n = Just DataConNS
+  | isValName n = Just ValNS
+  | isVarName n = Just VarNS
+  | otherwise = Nothing
+
+
 data TypeRecord = TypeRecord
   { trAstNode :: Int
   , trType :: String
@@ -79,6 +92,7 @@ data TypeRecord = TypeRecord
 
 data NameAndTypeRecord = NameAndTypeRecord
   { ntrName :: String
+  , ntrNamespace :: Maybe Namespace
   , ntrIsDefined :: Bool
   , ntrType :: Maybe String
   , ntrPos :: NodePos
@@ -135,11 +149,11 @@ persistNames conn moduleId names = do
       "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
       (map convertLocation names)
     void $ executeMany conn
-      "INSERT INTO names (astNode, name, isDefined) VALUES (?, ?, ?)"
+      "INSERT INTO names (astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?)"
       (map convertName (names `zip` concat astIds))
   where
-    convertName ((NameRecord name isDefined _), id) = (id :: Int, name, isDefined)
-    convertLocation (NameRecord _ _ (NodePos startRow startColumn endRow endColumn))
+    convertName ((NameRecord name namespace isDefined _), id) = (id :: Int, name, fmap fromEnum namespace, isDefined)
+    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
 storeTHNamesAndTypes :: Bool -> Connection -> (String, Int) -> LHsExpr GhcTc -> IO ()
@@ -158,13 +172,13 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
       "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
       (map convertLocation namesAndTypes)
     void $ executeMany conn
-      "INSERT INTO names (astNode, name, isDefined) VALUES (?, ?, ?)"
+      "INSERT INTO names (astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?)"
       (map convertName (namesAndTypes `zip` concat astIds))
     void $ executeMany conn
       "INSERT INTO types (astNode, type) VALUES (?, ?)"
       (catMaybes $ map convertType (namesAndTypes `zip` concat astIds))
   where
-    convertName (NameAndTypeRecord { ntrName, ntrIsDefined }, id) = (id :: Int, ntrName, ntrIsDefined)
+    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
     convertType (NameAndTypeRecord { ntrType }, id) = fmap (id :: Int,) ntrType
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
@@ -243,6 +257,7 @@ instance HaskellAst Name NameRecord where
                             Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
                 storedName = NameRecord
                     { nmName = fullName
+                    , nmNamespace = nameNamespace id
                     , nmIsDefined = defined
                     , nmPos = realSrcSpanToNodePos span
                     }
@@ -278,6 +293,7 @@ instance HaskellAst Id NameAndTypeRecord where
                         Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
             record = NameAndTypeRecord
                 { ntrName = fullName
+                , ntrNamespace = nameNamespace (Var.varName id)
                 , ntrIsDefined = defined
                 , ntrType = Just typeStr
                 , ntrPos = np
@@ -298,6 +314,7 @@ instance HaskellAst Name NameAndTypeRecord where
                         Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
             record = NameAndTypeRecord
                 { ntrName = fullName
+                , ntrNamespace = nameNamespace id
                 , ntrIsDefined = defined
                 , ntrType = Nothing
                 , ntrPos = np

@@ -124,6 +124,7 @@ initializeTables conn = do
           \,CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
           \,isDefined BOOL NOT NULL\
           \,name TEXT NOT NULL\
+          \,namespace INT\
           \);"
       )
       , ("types", "CREATE TABLE types \
