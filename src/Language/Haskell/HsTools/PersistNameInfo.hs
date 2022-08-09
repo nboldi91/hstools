@@ -17,6 +17,8 @@
 
 module Language.Haskell.HsTools.PersistNameInfo where
 
+-- import Language.Haskell.HsTools.Utils.DebugGHC
+
 import Control.Monad.Writer
 import Control.Monad.Reader
 import qualified Data.Map as M
@@ -38,6 +40,7 @@ import BooleanFormula
 import TcRnTypes
 import Var
 import TyCoRep
+import PlaceHolder
 
 import Database.PostgreSQL.Simple
 
@@ -232,6 +235,7 @@ type IsGhcPass p r =
   , HaskellAst (XUnambiguous (GhcPass p)) r
   , HaskellAst (XAppTypeE (GhcPass p)) r
   , HaskellAst (XCFieldOcc (GhcPass p)) r
+  , HaskellAst (NameOrRdrName (IdP (GhcPass p))) r
   )
 
 defining :: StoreM r a -> StoreM r a
@@ -402,10 +406,7 @@ instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
     store (XTyVarBndr _) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
-    store (FunBind _ id matches _ _) = do
-      isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
-      if isInstanceDefinition then store id else defining $ store id
-      store matches
+    store (FunBind _ _ matches _ _) = store matches -- id will be in matches as well     
     store (PatBind _ lhs rhs _) = store lhs >> store rhs
     store (VarBind _ id rhs _) = do
       isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
@@ -420,8 +421,14 @@ instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (MatchGroup (GhcPass p) a
     store (XMatchGroup {}) = return ()
 
 instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (Match (GhcPass p) a) r where 
-    store (Match _ _ pats grhss) = store pats >> store grhss
+    store (Match _ ctx pats grhss) = store ctx >> store pats >> store grhss
     store (XMatch {}) = return ()
+
+instance (HaskellAst a r) => HaskellAst (HsMatchContext a) r where 
+  store (FunRhs id _ _) = do
+    isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
+    if isInstanceDefinition then store id else defining $ store id
+  store _ = return () -- all the other cases are unrelevant
 
 instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (GRHSs (GhcPass p) a) r where 
     store (GRHSs _ grhs localBinds) = store grhs >> store localBinds

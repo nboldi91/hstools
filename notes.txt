@@ -6,13 +6,6 @@ What is a definition anyway?
  - For normal functions
  - For class functions / instance definitions
 
-Multi-case function definitions not parsed:
-
-f :: Int -> Bool
-f 0 = ...
-f x = ...
-^ this is not stored
-
 Not working with Main module
 
 Extend storing types to things that are not bindings.

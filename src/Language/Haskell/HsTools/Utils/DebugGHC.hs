@@ -4,8 +4,8 @@ module Language.Haskell.HsTools.Utils.DebugGHC (showDebug) where
 import Data.Data
 import qualified Data.Text as T
 
-showDebug :: Data a => a -> T.Text
-showDebug = showDebugNode 0 . showDebug'
+showDebug :: Data a => a -> String
+showDebug = T.unpack . showDebugNode 0 . showDebug'
 
 showDebugNode :: Int -> DebugNode -> T.Text
 showDebugNode indent node
