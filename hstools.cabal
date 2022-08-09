@@ -29,6 +29,7 @@ library
       Language.Haskell.HsTools.Utils.ShowTable
   other-modules:
       Language.Haskell.HsTools.PersistNameInfo
+      Language.Haskell.HsTools.Utils.DebugGHC
       Paths_hstools
   hs-source-dirs:
       src
@@ -42,6 +43,7 @@ library
     , ghc
     , mtl
     , postgresql-simple
+    , text
     , time
   default-language: Haskell2010
 

@@ -2,11 +2,6 @@
 module SimpleTest2 where
 
 import SimpleTest
+import Control.Lens
 
-foo :: String
-foo = "foo"
-
-$(generateDef a)
-
-bar :: String
-bar = "bar"
+makeLenses ''ColumnType

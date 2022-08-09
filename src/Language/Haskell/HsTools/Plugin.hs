@@ -10,6 +10,7 @@ import System.Directory
 import Database.PostgreSQL.Simple
 import qualified Data.ByteString.Char8 as BS
 import Data.Time.Clock
+import Data.Char (toLower)
 
 import Plugins
 import HscTypes
@@ -92,41 +93,48 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = do 
     tables <- query_ conn "SELECT tablename FROM pg_tables"
     indices <- query_ conn "SELECT indexname FROM pg_indexes"
-    let allExistingDefs = map head $ tables ++ indices
-    mapM_ (execute_ conn) (map snd . filter ((`notElem` allExistingDefs) . fst) $ tableDefs)
+    let allExistingDefs = map (toLowerCase . head) $ tables ++ indices
+    mapM_ (execute_ conn) (map snd . filter ((`notElem` allExistingDefs) . toLowerCase . fst) $ tableDefs)
   where
+    toLowerCase = map toLower
+
     tableDefs :: [(String, Query)]
     tableDefs =
       [ ("modules", "CREATE TABLE modules \
           \(moduleId SERIAL PRIMARY KEY\
-          \,filePath TEXT UNIQUE\
-          \,unitId TEXT\
-          \,moduleName TEXT\
-          \,modifiedTime TIMESTAMP WITH TIME ZONE\
-          \,loadingState INT\
+          \,filePath TEXT UNIQUE NOT NULL\
+          \,unitId TEXT NOT NULL\
+          \,moduleName TEXT NOT NULL\
+          \,modifiedTime TIMESTAMP WITH TIME ZONE NOT NULL\
+          \,loadingState INT NOT NULL\
           \);"
       )
       , ("ast", "CREATE TABLE ast \
-          \(module INT\
+          \(module INT NOT NULL\
           \,CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId) ON DELETE CASCADE\
           \,astId SERIAL PRIMARY KEY\
-          \,startRow INT\
-          \,startColumn INT\
-          \,endRow INT\
-          \,endColumn INT\
+          \,startRow INT NOT NULL\
+          \,startColumn INT NOT NULL\
+          \,endRow INT NOT NULL\
+          \,endColumn INT NOT NULL\
           \);"
       )
       , ("names", "CREATE TABLE names \
-          \(astNode INT\
+          \(astNode INT NOT NULL\
           \,CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
-          \,isDefined BOOL\
-          \,name TEXT\
+          \,isDefined BOOL NOT NULL\
+          \,name TEXT NOT NULL\
           \);"
       )
       , ("types", "CREATE TABLE types \
-          \(astNode INT\
+          \(astNode INT NOT NULL\
           \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
-          \,type TEXT\
+          \,type TEXT NOT NULL\
+          \);"
+      )
+      , ("thRanges", "CREATE TABLE thRanges \
+          \(astNode INT NOT NULL\
+          \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId) ON DELETE CASCADE\
           \);"
       )
       , ("index_ast_range", "CREATE INDEX index_ast_range ON ast (startRow, endRow, startColumn, endColumn);")

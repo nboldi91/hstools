@@ -13,8 +13,10 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TupleSections #-}
+{-# LANGUAGE RecordWildCards #-}
 
 module Language.Haskell.HsTools.PersistNameInfo where
+
 import Control.Monad.Writer
 import Control.Monad.Reader
 import qualified Data.Map as M
@@ -55,6 +57,10 @@ data NodePos = NodePos
 instance Show NodePos where
   show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec
 
+containsNP :: NodePos -> NodePos -> Bool
+NodePos sr1 sc1 er1 ec1 `containsNP` NodePos sr2 sc2 er2 ec2
+  = (sr1 < sr2 || (sr1 == sr2 && sc1 <= sc2)) && (er1 > er2 || (er1 == er2 && ec1 >= ec2))
+
 srcSpanToNodePos :: SrcSpan -> Maybe NodePos
 srcSpanToNodePos (RealSrcSpan span) = Just $ realSrcSpanToNodePos span
 srcSpanToNodePos _ = Nothing
@@ -86,7 +92,8 @@ storeTypes isVerbose conn (moduleName, moduleId) env = do
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
-    ((), types) <- runWriterT (runReaderT storeEnv (defaultStoreContext moduleName){ scNodeMap = astNodeMap })
+    context <- defaultStoreContext conn moduleId moduleName
+    ((), types) <- runWriterT (runReaderT storeEnv context{ scNodeMap = astNodeMap })
     when isVerbose $ do
       putStrLn "### Storing types:"
       mapM_ print types
@@ -115,7 +122,8 @@ persistTypes conn types = void $ executeMany conn
 
 storeNames :: Bool -> Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
 storeNames isVerbose conn (moduleName, moduleId) gr = do
-    ((), names) <- runWriterT (runReaderT (store gr) (defaultStoreContext moduleName))
+    context <- defaultStoreContext conn moduleId moduleName
+    ((), names) <- runWriterT (runReaderT (store gr) context)
     when isVerbose $ do
       putStrLn "### Storing names:"
       mapM_ print names
@@ -135,13 +143,14 @@ persistNames conn moduleId names = do
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
 storeTHNamesAndTypes :: Bool -> Connection -> (String, Int) -> LHsExpr GhcTc -> IO ()
-storeTHNamesAndTypes isVerbose conn (moduleName, moduleId) gr = do
-    ((), namesAndTypes) <- runWriterT (runReaderT (store gr) 
-      ((defaultStoreContext moduleName) {- { scForceStoringNames = True } -}))
+storeTHNamesAndTypes isVerbose conn (moduleName, moduleId) expr = do
+    context <- defaultStoreContext conn moduleId moduleName
+    ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
     when isVerbose $ do
       putStrLn "### Storing names and types for TH:"
       mapM_ print namesAndTypes
     persistNamesAndTypes conn moduleId namesAndTypes
+    persistTHRange conn (getLoc expr) moduleId namesAndTypes
 
 persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
 persistNamesAndTypes conn moduleId namesAndTypes = do
@@ -160,6 +169,18 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
+persistTHRange :: Connection -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
+persistTHRange conn (RealSrcSpan sp) moduleId records = do
+  let nodePos = realSrcSpanToNodePos sp
+  astNode <- if nodePos `elem` (map ntrPos records)
+    then query conn "SELECT astId FROM ast WHERE startRow = ? AND startColumn = ? AND endRow = ? AND endColumn = ?"
+          (npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)
+    else returning conn
+      "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
+      [(moduleId, npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)]
+  void $ executeMany conn "INSERT INTO thRanges (astNode) VALUES (?)" (astNode :: [Only Int])
+persistTHRange _ _ _ _ = return () 
+
 type StoreM r = ReaderT StoreContext (WriterT [r] IO)
 
 data StoreContext = StoreContext
@@ -168,19 +189,22 @@ data StoreContext = StoreContext
   , scDefining :: Bool
   , scNodeMap :: M.Map NodePos Int -- used to associate types with locations
   , scDefinition :: DefinitionContext
-  -- , scForceStoringNames :: Bool
+  , scThSpans :: [NodePos]
   }
 
-defaultStoreContext :: String -> StoreContext
-defaultStoreContext moduleName
-  = StoreContext
+defaultStoreContext :: Connection -> Int -> String -> IO StoreContext
+defaultStoreContext conn moduleId moduleName = do
+  thSpans <- query conn "SELECT startRow, startColumn, endRow, endColumn \
+                        \FROM thRanges t JOIN ast a ON t.astNode = a.astId \
+                        \WHERE a.module = ?" (Only moduleId)
+  return $ StoreContext
     { scModuleName = moduleName
     , scSpan = noSrcSpan
     , scDefining = False
     , scNodeMap = M.empty
     , scDefinition = Root
-    -- , scForceStoringNames = False
-  }
+    , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
+    }
 
 data DefinitionContext = Root | InstanceDefinition
   deriving Eq
@@ -286,7 +310,11 @@ instance HaskellAst Type r where
 
 instance HaskellAst a r => HaskellAst (Located a) r where
   store (L span ast)
-    = (if isGoodSrcSpan span then withSpan span else id) $ store ast
+    = do thSpan <- case srcSpanToNodePos span of
+                    Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
+                    Nothing -> return False
+         when (not thSpan) $
+          (if isGoodSrcSpan span then withSpan span else id) $ store ast
 
 instance HaskellAst a r => HaskellAst [a] r where
     store = mapM_ store
@@ -426,7 +454,7 @@ instance IsGhcPass p r => HaskellAst (HsExpr (GhcPass p)) r where
     store (HsCoreAnn _ _ _ e) = store e
     store (HsBracket _ br) = store br
     store (HsRnBracketOut _ br _) = store br
-    store (HsTcBracketOut {}) = return ()
+    store (HsTcBracketOut _ br _) = store br
     store (HsSpliceE _ sp) = store sp
     store (HsProc _ p c) = store p >> store c
     store (HsStatic _ e) = store e

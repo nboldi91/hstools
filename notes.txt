@@ -1,8 +1,8 @@
 Multi-name bindings (field and value for puns)
 
-Don't store definitions that are generated from a TH expression. TH expression itself is stored now.
-
 Now signatures and function implementations are both considered definitions, making GoToDefinition slower.
+
+Separate namespaces (for example data type and constructor name is not the same)
 
 What is a definition anyway?
  - For normal functions

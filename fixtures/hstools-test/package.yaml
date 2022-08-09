@@ -16,8 +16,7 @@ library:
     - SimpleTest
     - SimpleTest2
   dependencies:
-    - template-haskell
-    - loch-th
+    - lens
     - hstools
   ghc-options: 
     - -fplugin=Language.Haskell.HsTools.Plugin 
