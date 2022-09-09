@@ -103,8 +103,14 @@ data NameAndTypeRecord = NameAndTypeRecord
 
 -- TODO: look up by the name first and then by the location
 
-storeTypes :: Bool -> Connection -> (String, Int) -> TcGblEnv -> IO ()
-storeTypes isVerbose conn (moduleName, moduleId) env = do
+data StoreParams = StoreParams
+  { spIsVerbose :: Bool
+  , spConnection :: Connection
+  , spModule :: (String, Int)
+  }
+
+storeTypes :: StoreParams -> TcGblEnv -> IO ()
+storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
     astNodes <- query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
@@ -114,7 +120,7 @@ storeTypes isVerbose conn (moduleName, moduleId) env = do
     when isVerbose $ do
       putStrLn "### Storing types:"
       mapM_ print types
-    persistTypes conn types
+    persistTypes conn moduleId types
   where
     storeEnv = do
       -- TODO: finish storing types
@@ -131,14 +137,14 @@ storeTypes isVerbose conn (moduleName, moduleId) env = do
       --store (tcg_patsyns env)
       --store (tcg_doc_hdr env)
 
-persistTypes :: Connection -> [TypeRecord] -> IO ()
-persistTypes conn types = void $ executeMany conn
-    "INSERT INTO types (astNode, type) VALUES (?, ?)"
+persistTypes :: Connection -> Int -> [TypeRecord] -> IO ()
+persistTypes conn moduleId types = void $ executeMany conn
+    "INSERT INTO types (module, astNode, type) VALUES (?, ?, ?)"
     (map convertType types)
-  where convertType (TypeRecord astNode typ) = (astNode, typ)
+  where convertType (TypeRecord astNode typ) = (moduleId, astNode, typ)
 
-storeNames :: Bool -> Connection -> (String, Int) -> HsGroup GhcRn -> IO ()
-storeNames isVerbose conn (moduleName, moduleId) gr = do
+storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
+storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
     context <- defaultStoreContext conn moduleId moduleName
     ((), names) <- runWriterT (runReaderT (store gr) context)
     when isVerbose $ do
@@ -152,15 +158,15 @@ persistNames conn moduleId names = do
       "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
       (map convertLocation names)
     void $ executeMany conn
-      "INSERT INTO names (astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?)"
+      "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)"
       (map convertName (names `zip` concat astIds))
   where
-    convertName ((NameRecord name namespace isDefined _), id) = (id :: Int, name, fmap fromEnum namespace, isDefined)
+    convertName ((NameRecord name namespace isDefined _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined)
     convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
-storeTHNamesAndTypes :: Bool -> Connection -> (String, Int) -> LHsExpr GhcTc -> IO ()
-storeTHNamesAndTypes isVerbose conn (moduleName, moduleId) expr = do
+storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
+storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = do
     context <- defaultStoreContext conn moduleId moduleName
     ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
     when isVerbose $ do
@@ -175,14 +181,14 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
       "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
       (map convertLocation namesAndTypes)
     void $ executeMany conn
-      "INSERT INTO names (astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?)"
+      "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)"
       (map convertName (namesAndTypes `zip` concat astIds))
     void $ executeMany conn
-      "INSERT INTO types (astNode, type) VALUES (?, ?)"
+      "INSERT INTO types (module, astNode, type) VALUES (?, ?, ?)"
       (catMaybes $ map convertType (namesAndTypes `zip` concat astIds))
   where
-    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
-    convertType (NameAndTypeRecord { ntrType }, id) = fmap (id :: Int,) ntrType
+    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
+    convertType (NameAndTypeRecord { ntrType }, id) = fmap (moduleId, id :: Int,) ntrType
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
@@ -190,12 +196,12 @@ persistTHRange :: Connection -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
 persistTHRange conn (RealSrcSpan sp) moduleId records = do
   let nodePos = realSrcSpanToNodePos sp
   astNode <- if nodePos `elem` (map ntrPos records)
-    then query conn "SELECT astId FROM ast WHERE startRow = ? AND startColumn = ? AND endRow = ? AND endColumn = ?"
-          (npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)
+    then query conn "SELECT astId FROM ast WHERE module = ? AND startRow = ? AND startColumn = ? AND endRow = ? AND endColumn = ?"
+          (moduleId, npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)
     else returning conn
       "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
       [(moduleId, npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)]
-  void $ executeMany conn "INSERT INTO thRanges (astNode) VALUES (?)" (astNode :: [Only Int])
+  void $ executeMany conn "INSERT INTO thRanges (module, astNode) VALUES (?, ?)" (map (moduleId,) (map head astNode) :: [(Int, Int)])
 persistTHRange _ _ _ _ = return () 
 
 type StoreM r = ReaderT StoreContext (WriterT [r] IO)
