@@ -63,8 +63,8 @@ cleanAndRecordModule conn ms = do
             if needsUpdate
                 then do
                   content <- readFile fullPath
-                  [[res]] <- query conn "INSERT INTO modules (filePath, compiledTime, moduleName, unitId, loadingState, compiledSource) VALUES (?, ?, ?, ?, ?, ?) RETURNING moduleId"
-                                (fullPath, roundedModificationTime, moduleNameString moduleName, unitIdString unitId, 0 :: Int, content)
+                  [[res]] <- query conn "INSERT INTO modules (filePath, compiledTime, moduleName, unitId, loadingState, compiledSource, modifiedTime, modifiedFileDiffs) VALUES (?, ?, ?, ?, 0, ?, null, null) RETURNING moduleId"
+                                (fullPath, roundedModificationTime, moduleNameString moduleName, unitIdString unitId, content)
                   return $ Just res
                 else return Nothing
         Nothing -> return Nothing
