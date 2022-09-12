@@ -48,7 +48,7 @@ cleanAndRecordModule conn ms = do
             fullPath <- canonicalizePath filePath
             modificationTime <- getModificationTime fullPath
             let roundedModificationTime = roundUTCTime modificationTime
-            res <- query conn "SELECT modifiedTime FROM modules WHERE filePath = ?" (Only fullPath)
+            res <- query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only fullPath)
             needsUpdate <- case res of
                 [] -> do
                     putStrLn $ "File " ++ fullPath ++ " not processed yet."
@@ -61,9 +61,11 @@ cleanAndRecordModule conn ms = do
                                 return False
                 _ -> cleanModuleFromDB conn fullPath >> return True
             if needsUpdate
-                then Just . head . head <$>
-                    query conn "INSERT INTO modules (filePath, modifiedTime, moduleName, unitId, loadingState) VALUES (?, ?, ?, ?, ?) RETURNING moduleId"
-                        (fullPath, roundedModificationTime, moduleNameString moduleName, unitIdString unitId, 0 :: Int)
+                then do
+                  content <- readFile fullPath
+                  [[res]] <- query conn "INSERT INTO modules (filePath, compiledTime, moduleName, unitId, loadingState, compiledSource) VALUES (?, ?, ?, ?, ?, ?) RETURNING moduleId"
+                                (fullPath, roundedModificationTime, moduleNameString moduleName, unitIdString unitId, 0 :: Int, content)
+                  return $ Just res
                 else return Nothing
         Nothing -> return Nothing
 
@@ -111,8 +113,11 @@ initializeTables conn = do
           \,filePath TEXT UNIQUE NOT NULL\
           \,unitId TEXT NOT NULL\
           \,moduleName TEXT NOT NULL\
-          \,modifiedTime TIMESTAMP WITH TIME ZONE NOT NULL\
+          \,compiledTime TIMESTAMP WITH TIME ZONE NOT NULL\
           \,loadingState INT NOT NULL\
+          \,compiledSource TEXT NOT NULL\
+          \,modifiedTime TIMESTAMP WITH TIME ZONE\
+          \,modifiedFileDiffs TEXT\
           \);"
       )
       , ("ast", "CREATE TABLE ast \
@@ -149,7 +154,7 @@ initializeTables conn = do
       )
       ]
 
-data LoadingState = NotLoaded | NamesLoaded | TypesLoaded
+data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
 
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
