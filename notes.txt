@@ -1,20 +1,20 @@
-Multi-name bindings (field and value for puns)
 
-What is a definition anyway?
- - For normal functions
- - For class functions / instance definitions
+Roadmap:
 
-Extend storing types to things that are not bindings.
-
----
+ - Show a visual indication of the current file being up-to-date
+ - Detect compilation errors and show them in the IDE
 
 Future plans:
- - Attach comments to names and show them in hovers
- - Rename refactoring
- - Detect compilation errors and show them in the IDE
- - Auto-complete support
+
+  - Refine name-based info:
+    - Multi-name bindings (field and value for puns)
+    - What is a definition anyway?
+      - For normal functions
+      - For class functions / instance definitions
+    - Extend storing types to things that are not bindings.
+  - Attach comments to names and show them in hovers
+  - Rename refactoring
+  - Auto-complete support
   - Based on local and imported stuff
   - Based on modules that could be imported
   - Based on an indexing of a package universe
- - Show a visual indication of the current file being up-to-date
- - Try to keep things available even if the file is not up-to-date (at least track the position of the known elements)
