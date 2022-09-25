@@ -152,6 +152,8 @@ initializeTables conn = do
           \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)\
           \);"
       )
+      , ("notifyModulesFunction", "CREATE OR REPLACE FUNCTION notifyModulesFunction() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.modifiedFileDiffs IS NULL THEN PERFORM pg_notify('module_clean', NEW.filePath); END IF; RETURN NEW; END; $$")
+      , ("notifyModulesTrigger", "CREATE OR REPLACE TRIGGER notifyModulesTrigger AFTER INSERT OR UPDATE ON modules FOR EACH ROW EXECUTE FUNCTION notifyModulesFunction()")
       ]
 
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
