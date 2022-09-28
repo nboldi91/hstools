@@ -17,12 +17,11 @@
 
 module Language.Haskell.HsTools.PersistNameInfo where
 
--- import Language.Haskell.HsTools.Utils.DebugGHC
-
 import Control.Monad.Writer
 import Control.Monad.Reader
 import qualified Data.Map as M
 import Data.Maybe
+import Database.PostgreSQL.Simple (Connection)
 
 import HsDecls
 import HsExtension
@@ -42,7 +41,7 @@ import Var
 import TyCoRep
 import PlaceHolder
 
-import Database.PostgreSQL.Simple
+import Language.Haskell.HsTools.Database
 
 data NameRecord = NameRecord
   { nmName :: String
@@ -111,7 +110,7 @@ data StoreParams = StoreParams
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    astNodes <- query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
+    astNodes <- getAstNodes conn moduleId
     let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
@@ -120,8 +119,9 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
     when isVerbose $ do
       putStrLn "### Storing types:"
       mapM_ print types
-    persistTypes conn moduleId types
+    persistTypes conn (map convertType types)
   where
+    convertType (TypeRecord astNode typ) = (moduleId, astNode, typ)
     storeEnv = do
       -- TODO: finish storing types
       store (tcg_binds env)
@@ -137,12 +137,6 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
       --store (tcg_patsyns env)
       --store (tcg_doc_hdr env)
 
-persistTypes :: Connection -> Int -> [TypeRecord] -> IO ()
-persistTypes conn moduleId types = void $ executeMany conn
-    "INSERT INTO types (module, astNode, type) VALUES (?, ?, ?)"
-    (map convertType types)
-  where convertType (TypeRecord astNode typ) = (moduleId, astNode, typ)
-
 storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
     context <- defaultStoreContext conn moduleId moduleName
@@ -154,12 +148,8 @@ storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do
-    astIds <- returning conn
-      "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
-      (map convertLocation names)
-    void $ executeMany conn
-      "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)"
-      (map convertName (names `zip` concat astIds))
+    astIds <- persistAst conn (map convertLocation names)
+    persistName conn (map convertName (names `zip` astIds))
   where
     convertName ((NameRecord name namespace isDefined _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined)
     convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
@@ -177,15 +167,9 @@ storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = 
 
 persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
 persistNamesAndTypes conn moduleId namesAndTypes = do
-    astIds <- returning conn
-      "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
-      (map convertLocation namesAndTypes)
-    void $ executeMany conn
-      "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)"
-      (map convertName (namesAndTypes `zip` concat astIds))
-    void $ executeMany conn
-      "INSERT INTO types (module, astNode, type) VALUES (?, ?, ?)"
-      (catMaybes $ map convertType (namesAndTypes `zip` concat astIds))
+    astIds <- persistAst conn (map convertLocation namesAndTypes)
+    persistName conn (map convertName (namesAndTypes `zip` astIds))
+    persistTypes conn (catMaybes $ map convertType (namesAndTypes `zip` astIds))
   where
     convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
     convertType (NameAndTypeRecord { ntrType }, id) = fmap (moduleId, id :: Int,) ntrType
@@ -196,12 +180,9 @@ persistTHRange :: Connection -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
 persistTHRange conn (RealSrcSpan sp) moduleId records = do
   let nodePos = realSrcSpanToNodePos sp
   astNode <- if nodePos `elem` (map ntrPos records)
-    then query conn "SELECT astId FROM ast WHERE module = ? AND startRow = ? AND startColumn = ? AND endRow = ? AND endColumn = ?"
-          (moduleId, npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)
-    else returning conn
-      "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId"
-      [(moduleId, npStartRow nodePos, npStartCol nodePos, npEndRow nodePos, npEndCol nodePos)]
-  void $ executeMany conn "INSERT INTO thRanges (module, astNode) VALUES (?, ?)" (map (moduleId,) (map head astNode) :: [(Int, Int)])
+    then getAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
+    else insertAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
+  persistTHRange' conn moduleId astNode
 persistTHRange _ _ _ _ = return () 
 
 type StoreM r = ReaderT StoreContext (WriterT [r] IO)
@@ -217,9 +198,7 @@ data StoreContext = StoreContext
 
 defaultStoreContext :: Connection -> Int -> String -> IO StoreContext
 defaultStoreContext conn moduleId moduleName = do
-  thSpans <- query conn "SELECT startRow, startColumn, endRow, endColumn \
-                        \FROM thRanges t JOIN ast a ON t.astNode = a.astId \
-                        \WHERE a.module = ?" (Only moduleId)
+  thSpans <- getTHRanges conn moduleId
   return $ StoreContext
     { scModuleName = moduleName
     , scSpan = noSrcSpan

@@ -23,19 +23,19 @@ import Data.Maybe (fromMaybe, isNothing, catMaybes)
 import Data.String (IsString(..))
 import Control.Lens hiding (Iso)
 import Data.Time.Clock
-import Database.PostgreSQL.Simple
-import Database.PostgreSQL.Simple.FromField
-import Database.PostgreSQL.Simple.Errors
+import Database.PostgreSQL.Simple (Connection, connectPostgreSQL)
 import qualified Database.PostgreSQL.Simple.Notification as SQL
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
 import qualified Data.Vector as V
 import qualified Data.Aeson.KeyMap as KM
-import Language.Haskell.HsTools.LinesDiff
 import Text.Read (readMaybe)
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
+
+import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.LinesDiff
 
 handlers :: Handlers (LspM Config)
 handlers = mconcat
@@ -52,17 +52,7 @@ handlers = mconcat
           rewrites <- getRewrites file
           case newToOriginalPos rewrites (posToSP pos) of
             Right originalPos -> do
-              names <- liftIO $ query
-                conn
-                "SELECT dm.filePath, d.startRow, d.startColumn, d.endRow, d.endColumn \
-                    \FROM ast AS n JOIN names nn ON nn.astNode = n.astId \
-                      \JOIN names AS dn ON nn.name = dn.name AND nn.namespace = dn.namespace \
-                      \JOIN ast AS d ON d.astId = dn.astNode \
-                      \JOIN modules nm ON n.module = nm.moduleId \
-                      \JOIN modules dm ON d.module = dm.moduleId \
-                    \WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ? \
-                    \AND dn.isDefined = TRUE"
-                ( file, spLine originalPos, spLine originalPos, spCol originalPos, spCol originalPos )
+              names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (Just True)
               liftLSP $ responder $ Right $ InR $ InL $ LSP.List $ take 1 $ catMaybes $ map (lineToLoc rewrites) names
             Left _ -> liftLSP $ responder $ Right $ InR $ InL $ LSP.List [] -- the source position was not in the compiled source code
 
@@ -73,17 +63,7 @@ handlers = mconcat
           rewrites <- getRewrites file
           case newToOriginalPos rewrites (posToSP pos) of
             Right originalPos -> do
-              names <- liftIO $ query
-                conn
-                (fromString $ "SELECT dm.filePath, d.startRow, d.startColumn, d.endRow, d.endColumn \
-                    \FROM ast AS n JOIN names nn ON nn.astNode = n.astId \
-                      \JOIN names AS dn ON nn.name = dn.name AND nn.namespace = dn.namespace \
-                      \JOIN ast AS d ON d.astId = dn.astNode \
-                      \JOIN modules nm ON n.module = nm.moduleId \
-                      \JOIN modules dm ON d.module = dm.moduleId \
-                    \WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?"
-                      ++ (if not includeDefinition then "\n AND dn.isDefined = FALSE" else ""))
-                ( file, spLine originalPos, spLine originalPos, spCol originalPos, spCol originalPos )
+              names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (if not includeDefinition then Just False else Nothing)
               liftLSP $ responder $ Right $ LSP.List $ catMaybes $ map (lineToLoc rewrites) names
             Left _ -> liftLSP $ responder $ Right $ LSP.List [] -- the source position was not in the compiled source code
 
@@ -94,20 +74,12 @@ handlers = mconcat
           rewrites <- getRewrites file
           case newToOriginalPos rewrites (posToSP pos) of
             Right originalPos -> do
-              let lineNum = fromIntegral (spLine originalPos) :: Integer
-                  columnNum = fromIntegral (spCol originalPos) :: Integer
-              names <- liftIO $ query
-                conn
-                "SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn \
-                    \FROM ast n \
-                    \JOIN names nn ON nn.astNode = n.astId \
-                    \JOIN modules nm ON n.module = nm.moduleId \
-                    \LEFT JOIN types tn ON n.astId = tn.astNode \
-                    \WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?"
-                ( file, lineNum, lineNum, columnNum, columnNum )
+              let lineNum = fromIntegral (spLine originalPos)
+                  columnNum = fromIntegral (spCol originalPos)
+              names <- liftIO $ getHoverInfo conn file lineNum columnNum
               case names of
                 [] -> liftLSP $ responder (Right Nothing)  
-                (typ, isDefined, name, startLine :: Int, startColumn :: Int, endLine :: Int, endColumn :: Int):_ -> 
+                (typ, isDefined, name, startLine, startColumn, endLine, endColumn):_ -> 
                   let ms = HoverContents $ markedUpContent "hstools" $ T.pack
                               $ name ++ (if isDefined == True then " defined here" else "")
                                   ++ (maybe "" ("\n  :: " ++) typ)
@@ -124,8 +96,7 @@ handlers = mconcat
       let NotificationMessage _ _ args = message
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
-          liftIO $ execute_ conn "DROP TABLE modules, ast, names, types, thRanges CASCADE"
-          liftIO $ execute_ conn "DROP TRIGGER modulesNotifyChange"
+          liftIO $ cleanDB conn
           sendMessage "DB cleaned"
         A.Array (V.toList -> [ A.String s ])
           -> sendMessage $ "Cleaning DB for path: " <> s
@@ -137,16 +108,16 @@ handlers = mconcat
       forM_ fileChanges $ \(FileEvent uri _) -> ensureFileLocation' uri $ \filePath -> do
         isFileOpen <- liftLSP LSP.getConfig >>= liftIO . isFileOpen filePath . cfFileRecords
         unless isFileOpen $ do
-          compiledSource <- liftIO $ query conn "SELECT compiledSource FROM modules WHERE filePath = ?" (Only filePath)
+          compiledSource <- liftIO $ getCompiledSource conn filePath
           case compiledSource of
-            [[source]] -> do
+            Just source -> do
               updatedSource <- liftIO $ readFile filePath
               let fileDiffs = sourceDiffs startSP source updatedSource
               liftLSP LSP.getConfig >>= \cf -> liftIO $ replaceSourceDiffs filePath fileDiffs $ cfFileRecords cf
               currentTime <- liftIO getCurrentTime
               let serializedDiff = nothingIfEmpty $ serializeSourceDiffs fileDiffs
-              void $ liftIO $ execute conn "UPDATE modules SET modifiedTime = ?, modifiedFileDiffs = ? WHERE filePath = ?" (currentTime, serializedDiff, filePath)
-            _ -> return () -- the file is not compiled yet, nothing to do
+              void $ liftIO $ updateFileDiffs conn filePath currentTime serializedDiff
+            Nothing -> return () -- the file is not compiled yet, nothing to do
         updateFileStatesFor filePath
   
   , notificationHandler STextDocumentDidChange $ \msg -> runInContext "STextDocumentDidChange" $ withConnection $ \conn -> do
@@ -163,7 +134,7 @@ handlers = mconcat
         fileDiffs <- liftIO $ readMVar (cfFileRecords cfg) >>= return . maybe Map.empty frDiffs . Map.lookup filePath
         currentTime <- liftIO getCurrentTime
         let serializedDiff = serializeSourceDiffs fileDiffs
-        void $ liftIO $ execute conn "UPDATE modules SET modifiedTime = ?, modifiedFileDiffs = ? WHERE filePath = ?" (currentTime, serializedDiff, filePath)
+        void $ liftIO $ updateFileDiffs conn filePath currentTime (Just serializedDiff)
   
   , notificationHandler STextDocumentDidOpen $ \msg -> runInContext "STextDocumentDidOpen" $ withConnection $ \conn -> do
       let NotificationMessage _ _ (DidOpenTextDocumentParams (TextDocumentItem uri _langId _version content)) = msg
@@ -281,13 +252,13 @@ tryToConnectToDB = do
   case connOrError of
     Right conn -> do 
       sendMessage "Connected to DB"
-      modifiedDiffs <- liftIO $ query_ conn "SELECT filePath, modifiedFileDiffs FROM modules"
+      modifiedDiffs <- liftIO $ getAllModifiedFileDiffs conn 
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord $ fromMaybe Map.empty $ fmap deserializeSourceDiffs diff)) modifiedDiffs
       liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
       liftLSP $ LSP.setConfig $ config { cfConnection = Just conn }
       updateFileStates
       env <- getLspEnv
-      liftIO $ execute_ conn "LISTEN module_clean"
+      liftIO $ listenToModuleClean conn
       void $ liftIO $ forkIO (handleNotifications conn (cfFileRecords config) (resSendMessage env))
     Left (e :: SomeException) -> return () -- error is OK
 
@@ -345,17 +316,12 @@ recordFileOpened :: Connection -> FilePath -> T.Text -> FileRecords -> IO ()
 recordFileOpened conn fp content mv
   = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= \r -> return $ Map.alter (const r) fp frs
   where
-    updateRecord Nothing = do
-      res <- query conn "SELECT compiledSource, modifiedFileDiffs FROM modules WHERE filePath = ?" (Only fp)
-      case res of
-        [] -> return Nothing
-        (src, diffs):_ -> return $ Just $ OpenFileRecord (maybe Map.empty deserializeSourceDiffs diffs) (toFileLines src) contentLines
+    updateRecord Nothing =
+      fmap (\(src, diffs) -> OpenFileRecord (deserializeSourceDiffs diffs) (toFileLines src) contentLines) 
+        <$> getCompiledSourceAndModifiedFileDiffs conn fp
     updateRecord (Just (FileRecord diffs)) = do
-      compiledSource <- query conn "SELECT compiledSource FROM modules WHERE filePath = ?" (Only fp)
-      case compiledSource of
-        [[Just src]] -> return $ Just $ OpenFileRecord diffs (toFileLines src) contentLines
-        _ -> return Nothing
-    updateRecord (Just r) = return $ Just r
+      compiledSource <- getCompiledSource conn fp
+      return $ fmap (\src -> OpenFileRecord diffs (toFileLines src) contentLines) compiledSource
     contentLines = toFileLines $ T.unpack content
 
 recordFileClosed :: Connection -> FilePath -> FileRecords -> IO ()
@@ -363,10 +329,8 @@ recordFileClosed conn fp mv
   = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= \r -> return $ Map.insert fp r frs
   where
     updateRecord (Just (OpenFileRecord diffs compiledContent currentContent)) = do
-      modifiedDiffs <- query conn "SELECT modifiedFileDiffs FROM modules WHERE filePath = ?" (Only fp)
-      case modifiedDiffs of
-        [[Just src]] -> return $ FileRecord $ Map.fromAscList $ map read $ lines src
-        _ -> return $ FileRecord Map.empty
+      modifiedDiffs <- getModifiedFileDiffs conn fp
+      return $ FileRecord $ maybe Map.empty (Map.fromAscList . map read . lines) modifiedDiffs
     updateRecord _ = error $ "recordFileClosed: file " ++ fp ++ " should have been on record"
 
 markFileRecordsClean :: [FilePath] -> FileRecords -> IO ()

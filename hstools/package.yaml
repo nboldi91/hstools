@@ -28,6 +28,7 @@ library:
     - Language.Haskell.HsTools.Plugin
     - Language.Haskell.HsTools.Utils.ShowTable
   dependencies:
+    - hstools-base
     - ghc
     - postgresql-simple
     - mtl

@@ -1,6 +1,6 @@
-name:                hstools-lsp
+name:                hstools-base
 version:             0.1.0.0
-github:              "nboldi91/hstools-lsp"
+github:              "nboldi91/hstools"
 license:             BSD3
 author:              "Boldizsar Nemeth"
 maintainer:          "nboldi91@gmail.com"
@@ -17,7 +17,7 @@ extra-source-files:
 # To avoid duplicated efforts in documentation and dealing with the
 # complications of embedding Haddock markup inside cabal files, it is
 # common to point users to the README.md file.
-description:         Please see the README on GitHub at <https://github.com/nboldi91/hstools-lsp#readme>
+description:         Please see the README on GitHub at <https://github.com/nboldi91/hstools#readme>
 
 dependencies:
 - base >= 4.7 && < 5
@@ -25,31 +25,10 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
-    - Language.Haskell.HsTools.LinesDiff
+    - Language.Haskell.HsTools.Database
   dependencies:
-    - Diff
-    - containers
-    - split
-
-executables:
-  hstools-lsp:
-    main:                Main.hs
-    source-dirs:         app
-    ghc-options:
-    - -threaded
-    - -rtsopts
-    - -with-rtsopts=-N
-    dependencies:
-    - hstools-lsp
-    - hstools-base
-    - lsp >= 1.5
-    - lsp-types >= 1.5
-    - text
-    - lens
     - postgresql-simple
-    - bytestring
-    - aeson
-    - vector
-    - mtl
     - time
-    - containers
+  ghc-options:
+    - -W
+    - -Werror
