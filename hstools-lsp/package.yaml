@@ -53,3 +53,17 @@ executables:
     - mtl
     - time
     - containers
+
+tests:
+  hstools-lsp-tests:
+    main: AllTests.hs
+    source-dirs: tests
+    ghc-options:
+    - -threaded
+    dependencies:
+    - hstools-lsp
+    - base
+    - containers
+    - HUnit
+    - HTF
+

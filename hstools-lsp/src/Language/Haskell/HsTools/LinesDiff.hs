@@ -14,6 +14,7 @@ import Debug.Trace
 data SP = SP { spLine :: Int, spCol :: Int }
   deriving (Eq, Ord, Show, Read)
 
+startSP :: SP
 startSP = SP 1 1
 
 data DSP = DSP { dspLine :: Int, dspCol :: Int, dspEndLine :: Int }
@@ -42,16 +43,16 @@ type SourceDiffs = Map.Map SP SourceDiffData
 type FileLines = [String]
 
 data SourceRange = SourceRange { srStart :: SP, srEnd :: SP }
-  deriving (Show, Read)
+  deriving (Eq, Show, Read)
 
 data SourceDiffData = SourceDiffData { sddEnd :: SP, sddReplacement :: DSP }
-  deriving (Show, Read)
+  deriving (Eq, Show, Read)
 
 data SourceDiff = SourceDiff { sdStart :: SP, sdEnd :: SP, sdReplacement :: DSP }
-  deriving (Show, Read)
+  deriving (Eq, Show, Read)
 
 data SourceRewrite = SourceRewrite { srwStart :: SP, srwEnd :: SP, srwReplacement :: String }
-  deriving (Show, Read)
+  deriving (Eq, Show, Read)
 
 srcDiffList :: SourceDiffs -> [SourceDiff]
 srcDiffList = map srcDiff . Map.toList
@@ -73,7 +74,7 @@ sdEndDiff (SourceDiff start end replacement)
   = DSP
     (dspLine replacement - (spLine end - spLine start))
     (dspCol replacement - (spCol end - spCol start))
-    (spLine start)
+    (spLine end)
 
 concatRanges :: [SourceRange] -> SourceRange
 concatRanges [] = error "concatRanges: empty"
