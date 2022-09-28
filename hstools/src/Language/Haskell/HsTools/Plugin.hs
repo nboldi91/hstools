@@ -73,7 +73,7 @@ roundUTCTime (UTCTime day time) = UTCTime day (picosecondsToDiffTime $ round $ d
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
     withDB clOpts $ \conn -> do
-        initializeTables conn
+        reinitializeTablesIfNeeded conn
         cleanAndRecordModule conn ms
     return mod
 

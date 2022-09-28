@@ -96,7 +96,7 @@ handlers = mconcat
       let NotificationMessage _ _ args = message
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
-          liftIO $ cleanDB conn
+          liftIO $ reinitializeTables conn
           sendMessage "DB cleaned"
         A.Array (V.toList -> [ A.String s ])
           -> sendMessage $ "Cleaning DB for path: " <> s
@@ -252,6 +252,7 @@ tryToConnectToDB = do
   case connOrError of
     Right conn -> do 
       sendMessage "Connected to DB"
+      liftIO $ reinitializeTablesIfNeeded conn
       modifiedDiffs <- liftIO $ getAllModifiedFileDiffs conn 
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord $ fromMaybe Map.empty $ fmap deserializeSourceDiffs diff)) modifiedDiffs
       liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords

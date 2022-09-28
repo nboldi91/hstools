@@ -1,12 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE QuasiQuotes #-}
 
 module Language.Haskell.HsTools.Database where
 
+import Control.Exception
 import Control.Monad
-import Data.Char (toLower)
 import Data.Maybe
 import Data.Time.Clock
 import Data.String
+import Database.PostgreSQL.Simple.SqlQQ (sql)
 
 import Database.PostgreSQL.Simple
 
@@ -71,9 +73,11 @@ persistTHRange' conn mod astNode = void $ execute conn "INSERT INTO thRanges (mo
 
 getTHRanges :: Connection -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId
-  = query conn "SELECT startRow, startColumn, endRow, endColumn \
-                  \FROM thRanges t JOIN ast a ON t.astNode = a.astId \
-                  \WHERE a.module = ?" (Only moduleId)
+  = query conn [sql|
+    SELECT startRow, startColumn, endRow, endColumn
+      FROM thRanges t JOIN ast a ON t.astNode = a.astId
+      WHERE a.module = ?
+    |] (Only moduleId)
 
 getAstId :: Connection -> Int -> Int -> Int -> Int -> Int -> IO Int
 getAstId conn moduleId startRow startCol endRow endCol
@@ -90,36 +94,33 @@ insertAstId conn moduleId startRow startCol endRow endCol
 getMatchingNames :: Connection -> FilePath -> Int -> Int -> Maybe Bool -> IO [(String, Int, Int, Int, Int)]
 getMatchingNames conn file row col onlyDefinitions
   = query conn
-      (fromString $ 
-        "SELECT dm.filePath, d.startRow, d.startColumn, d.endRow, d.endColumn \
-          \FROM ast AS n JOIN names nn ON nn.astNode = n.astId \
-            \JOIN names AS dn ON nn.name = dn.name AND nn.namespace = dn.namespace \
-            \JOIN ast AS d ON d.astId = dn.astNode \
-            \JOIN modules nm ON n.module = nm.moduleId \
-            \JOIN modules dm ON d.module = dm.moduleId \
-          \WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ? "
-          ++ (maybe "" (("AND dn.isDefined = " ++) . show) onlyDefinitions))
+      ([sql|
+        SELECT dm.filePath, d.startRow, d.startColumn, d.endRow, d.endColumn
+          FROM ast AS n JOIN names nn ON nn.astNode = n.astId
+            JOIN names AS dn ON nn.name = dn.name AND nn.namespace = dn.namespace
+            JOIN ast AS d ON d.astId = dn.astNode
+            JOIN modules nm ON n.module = nm.moduleId
+            JOIN modules dm ON d.module = dm.moduleId
+          WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?
+      |] `mappend` (fromString $ maybe "" ((" AND dn.isDefined = " ++) . show) onlyDefinitions))
       (file, row, row, col, col)
 
 getHoverInfo :: Connection -> FilePath -> Int -> Int -> IO [(Maybe String, Bool, String, Int, Int, Int, Int)]
 getHoverInfo conn file row col =
   query
     conn
-    "SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn \
-        \FROM ast n \
-        \JOIN names nn ON nn.astNode = n.astId \
-        \JOIN modules nm ON n.module = nm.moduleId \
-        \LEFT JOIN types tn ON n.astId = tn.astNode \
-        \WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?"
+    [sql| 
+      SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn
+        FROM ast n
+        JOIN names nn ON nn.astNode = n.astId
+        JOIN modules nm ON n.module = nm.moduleId
+        LEFT JOIN types tn ON n.astId = tn.astNode
+        WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?
+    |]
     (file, row, row, col, col)
 
 listenToModuleClean :: Connection -> IO ()
 listenToModuleClean conn = void $ execute_ conn "LISTEN module_clean"
-
-cleanDB :: Connection -> IO ()
-cleanDB conn = void $ do
-  execute_ conn "DROP TABLE modules, ast, names, types, thRanges CASCADE"
-  execute_ conn "DROP TRIGGER modulesNotifyChange"
 
 cleanModuleFromDB :: Connection -> FilePath -> IO ()
 cleanModuleFromDB conn filePath = do
@@ -131,61 +132,89 @@ cleanModuleFromDB conn filePath = do
       void $ execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
       void $ execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
 
-initializeTables :: Connection -> IO ()
-initializeTables conn = do 
-    tables <- query_ conn "SELECT tablename FROM pg_tables"
-    indices <- query_ conn "SELECT indexname FROM pg_indexes"
-    let allExistingDefs = map (toLowerCase . head) $ tables ++ indices
-    mapM_ (execute_ conn) (map snd . filter ((`notElem` allExistingDefs) . toLowerCase . fst) $ tableDefs)
-  where
-    toLowerCase = map toLower
+reinitializeTablesIfNeeded :: Connection -> IO ()
+reinitializeTablesIfNeeded conn = do
+  res <- try $ query_ conn "SELECT versionNumber FROM version" :: IO (Either SomeException [[Int]])
+  case res of
+    Right [[r]] | databaseSchemaVersion == r -> return ()
+    _ -> reinitializeTables conn
 
-    tableDefs :: [(String, Query)]
-    tableDefs =
-      [ ("modules", "CREATE TABLE modules \
-          \(moduleId SERIAL PRIMARY KEY\
-          \,filePath TEXT UNIQUE NOT NULL\
-          \,unitId TEXT NOT NULL\
-          \,moduleName TEXT NOT NULL\
-          \,compiledTime TIMESTAMP WITH TIME ZONE NOT NULL\
-          \,loadingState INT NOT NULL\
-          \,compiledSource TEXT NOT NULL\
-          \,modifiedTime TIMESTAMP WITH TIME ZONE\
-          \,modifiedFileDiffs TEXT\
-          \);"
-      )
-      , ("ast", "CREATE TABLE ast \
-          \(module INT NOT NULL\
-          \,CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId)\
-          \,astId SERIAL PRIMARY KEY\
-          \,startRow INT NOT NULL\
-          \,startColumn INT NOT NULL\
-          \,endRow INT NOT NULL\
-          \,endColumn INT NOT NULL\
-          \);"
-      )
-      , ("names", "CREATE TABLE names \
-          \(module INT NOT NULL\
-          \,astNode INT NOT NULL\
-          \,CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId)\
-          \,isDefined BOOL NOT NULL\
-          \,name TEXT NOT NULL\
-          \,namespace INT\
-          \);"
-      )
-      , ("types", "CREATE TABLE types \
-          \(module INT NOT NULL\
-          \,astNode INT NOT NULL\
-          \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)\
-          \,type TEXT NOT NULL\
-          \);"
-      )
-      , ("thRanges", "CREATE TABLE thRanges \
-          \(module INT NOT NULL\
-          \,astNode INT NOT NULL\
-          \,CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)\
-          \);"
-      )
-      , ("notifyModulesFunction", "CREATE OR REPLACE FUNCTION notifyModulesFunction() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.modifiedFileDiffs IS NULL THEN PERFORM pg_notify('module_clean', NEW.filePath); END IF; RETURN NEW; END; $$")
-      , ("notifyModulesTrigger", "CREATE OR REPLACE TRIGGER notifyModulesTrigger AFTER INSERT OR UPDATE ON modules FOR EACH ROW EXECUTE FUNCTION notifyModulesFunction()")
-      ]
+reinitializeTables :: Connection -> IO ()
+reinitializeTables conn = do
+  void $ execute_ conn "DROP OWNED BY SESSION_USER"
+  initializeTables conn
+
+initializeTables :: Connection -> IO ()
+initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
+
+databaseSchemaVersion :: Int
+databaseSchemaVersion = 1
+
+databaseSchema :: Query
+databaseSchema = [sql|
+
+  CREATE TABLE version ( versionNumber INT NOT NULL );
+  INSERT INTO version (versionNumber) VALUES (?);
+
+  CREATE TABLE modules
+    ( moduleId SERIAL PRIMARY KEY
+    , filePath TEXT UNIQUE NOT NULL
+    , unitId TEXT NOT NULL
+    , moduleName TEXT NOT NULL
+    , compiledTime TIMESTAMP WITH TIME ZONE NOT NULL
+    , loadingState INT NOT NULL
+    , compiledSource TEXT NOT NULL
+    , modifiedTime TIMESTAMP WITH TIME ZONE
+    , modifiedFileDiffs TEXT
+    );
+
+  CREATE TABLE ast 
+    ( module INT NOT NULL
+    , CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId)
+    , astId SERIAL PRIMARY KEY
+    , startRow INT NOT NULL
+    , startColumn INT NOT NULL
+    , endRow INT NOT NULL
+    , endColumn INT NOT NULL
+    );
+
+  CREATE TABLE names 
+    ( module INT NOT NULL
+    , astNode INT NOT NULL
+    , CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    , isDefined BOOL NOT NULL
+    , name TEXT NOT NULL
+    , namespace INT
+    );
+
+  CREATE TABLE types 
+    ( module INT NOT NULL
+    , astNode INT NOT NULL
+    , CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    , type TEXT NOT NULL
+    );
+
+  CREATE TABLE thRanges 
+    ( module INT NOT NULL
+    , astNode INT NOT NULL
+    , CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    );
+
+  CREATE OR REPLACE FUNCTION notifyModulesFunction()
+    RETURNS trigger
+    LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW.modifiedFileDiffs IS NULL
+          THEN PERFORM pg_notify('module_clean', NEW.filePath);
+        END IF;
+        RETURN NEW;
+      END;
+    $$;
+
+  CREATE OR REPLACE TRIGGER notifyModulesTrigger
+    AFTER INSERT OR UPDATE
+    ON modules
+    FOR EACH ROW
+    EXECUTE FUNCTION notifyModulesFunction();
+
+|]
