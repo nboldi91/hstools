@@ -151,7 +151,7 @@ touchingChanges diffs (SourceRange start end) = (intersecting, nonIntersecting)
 -- extending to encompass all existing changes around it
 addExtraChange :: FileLines -> SourceRewrite -> (FileLines, SourceDiffs) -> (FileLines, SourceDiffs)
 addExtraChange compiledContent rewrite@(SourceRewrite start end replacement) (actualContent, diffs) 
-  = (newContent, newDiffs)
+  = trace ("### addExtraChange: " ++ show replacementDSP ++ "\n" ++ show origRange ++ "\n" ++ show singletonDiffs ++ "\n" ++ show (affectedDiffs, unaffectedDiffs) ++ "\n" ++ show origRangeToReDiff ++ "\n" ++ show newestRangeToReDiff ++ "\n" ++ show newContent ++ "\n" ++ show reDiffs ++ "\n###") $ (newContent, newDiffs)
   where
     newDiffs
       = if null affectedDiffs
@@ -203,9 +203,18 @@ sourceDiffs start original modified = Map.fromAscList $ go start $ getGroupedDif
   where
     go :: SP -> [Diff String] -> [(SP, SourceDiffData)]
     go pos (Both x _ : rest) = go (spAdvanceStr pos x) rest
-    go pos (First a : rest) = let endPos = spAdvanceStr pos a in (pos, SourceDiffData endPos (DSP 0 0 (spLine endPos))) : go endPos rest
-    go pos (Second a : rest) = (pos, SourceDiffData pos (getDiffPos pos a)) : go pos rest
+    go pos (First a : Second b : rest) = calculateReplacement pos a b rest
+    go pos (Second b : First a : rest) = calculateReplacement pos a b rest
+    go pos (First a : rest) = calculateReplacement pos a "" rest
+    go pos (Second b : rest) = calculateReplacement pos "" b rest
     go _ [] = []
+
+    calculateReplacement pos replaced replacement rest = 
+      (pos, SourceDiffData endPos (getDiffPos pos replacement)) : go endPos rest
+      where
+        endPos = spAdvanceStr pos replaced
+
+    
 
 getDiffPos :: SP -> String -> DSP
 getDiffPos pos str = spDiff (spAdvanceStr pos str) pos
