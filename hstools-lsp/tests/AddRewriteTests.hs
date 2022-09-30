@@ -8,6 +8,7 @@ import Test.Framework
 import Test.HUnit.Base (Assertion)
 
 import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.Database
 
 
 test_addRewrite_oneExtraCharBeforeOneChange :: Assertion

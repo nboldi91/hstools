@@ -9,16 +9,10 @@ import Data.Algorithm.Diff
 import Data.List
 import Data.List.Split
 
-import Debug.Trace
-
-data SP = SP { spLine :: Int, spCol :: Int }
-  deriving (Eq, Ord, Show, Read)
+import Language.Haskell.HsTools.Database
 
 startSP :: SP
 startSP = SP 1 1
-
-data DSP = DSP { dspLine :: Int, dspCol :: Int, dspEndLine :: Int }
-  deriving (Eq, Ord, Show, Read)
 
 addDsp :: DSP -> SP -> SP
 addDsp (DSP dl dc endLine) (SP line col)
@@ -37,22 +31,6 @@ addDsps (DSP dl1 dc1 el1) (DSP dl2 dc2 el2) = DSP (dl1 + dl2) dc2 el2
 
 spDiff :: SP -> SP -> DSP
 spDiff (SP l1 c1) (SP l2 c2) = DSP (l1 - l2) (c1 - c2) l2
-
-type SourceDiffs = Map.Map SP SourceDiffData
-
-type FileLines = [String]
-
-data SourceRange = SourceRange { srStart :: SP, srEnd :: SP }
-  deriving (Eq, Show, Read)
-
-data SourceDiffData = SourceDiffData { sddEnd :: SP, sddReplacement :: DSP }
-  deriving (Eq, Show, Read)
-
-data SourceDiff = SourceDiff { sdStart :: SP, sdEnd :: SP, sdReplacement :: DSP }
-  deriving (Eq, Show, Read)
-
-data SourceRewrite = SourceRewrite { srwStart :: SP, srwEnd :: SP, srwReplacement :: String }
-  deriving (Eq, Show, Read)
 
 srcDiffList :: SourceDiffs -> [SourceDiff]
 srcDiffList = map srcDiff . Map.toList
@@ -213,8 +191,6 @@ sourceDiffs start original modified = Map.fromAscList $ go start $ getGroupedDif
       (pos, SourceDiffData endPos (getDiffPos pos replacement)) : go endPos rest
       where
         endPos = spAdvanceStr pos replaced
-
-    
 
 getDiffPos :: SP -> String -> DSP
 getDiffPos pos str = spDiff (spAdvanceStr pos str) pos

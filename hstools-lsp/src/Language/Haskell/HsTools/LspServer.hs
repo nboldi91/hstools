@@ -32,7 +32,6 @@ import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
 import qualified Data.Vector as V
 import qualified Data.Aeson.KeyMap as KM
-import Text.Read (readMaybe)
 import Control.Concurrent (forkIO)
 import Control.Concurrent.MVar
 import System.IO
@@ -405,10 +404,3 @@ lineToLoc rewrites (file, startLine, startCol, endLine, endCol)
 nothingIfEmpty :: String -> Maybe String
 nothingIfEmpty "" = Nothing
 nothingIfEmpty str = Just str
-
-serializeSourceDiffs :: SourceDiffs -> String
-serializeSourceDiffs = unlines . map show . Map.toAscList 
-
-deserializeSourceDiffs :: String -> SourceDiffs
-deserializeSourceDiffs str
-  = Map.fromAscList $ map (\s -> fromMaybe (error $ "Can't deserialize source diff: " ++ show s) $ readMaybe s) $ lines str

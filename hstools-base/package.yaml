@@ -30,7 +30,7 @@ library:
     - postgresql-simple
     - time
     - bytestring
-    - HMock
+    - containers
   ghc-options:
     - -W
     - -Werror
