@@ -15,6 +15,8 @@ import Database.PostgreSQL.Simple
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
 
+data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
+
 getCompiledTime :: Connection -> FilePath -> IO (Maybe UTCTime)
 getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only filePath)
 
@@ -124,13 +126,21 @@ listenToModuleClean conn = void $ execute_ conn "LISTEN module_clean"
 
 cleanModuleFromDB :: Connection -> FilePath -> IO ()
 cleanModuleFromDB conn filePath = do
-    moduleIds <- query conn "SELECT moduleId FROM modules WHERE filePath = ?" [filePath]
-    forM_ (moduleIds :: [[Int]]) $ \[moduleId] -> do
-      void $ execute conn "DELETE FROM names WHERE module = ?" [moduleId]
-      void $ execute conn "DELETE FROM types WHERE module = ?" [moduleId]
-      void $ execute conn "DELETE FROM thRanges WHERE module = ?" [moduleId]
-      void $ execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
-      void $ execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
+  moduleIds <- query conn "SELECT moduleId FROM modules WHERE filePath = ?" [filePath]
+  forM_ moduleIds $ \[moduleId] -> cleanRelatedData conn moduleId
+
+cleanModulesFromDB :: Connection -> FilePath -> IO ()
+cleanModulesFromDB conn filePath = do
+  moduleIds <- query conn "SELECT moduleId FROM modules WHERE filePath LIKE '%' || ? || '%'" [filePath]
+  forM_ moduleIds $ \[moduleId] -> cleanRelatedData conn moduleId
+
+cleanRelatedData :: Connection -> Int -> IO ()
+cleanRelatedData conn moduleId = void $ do
+  execute conn "DELETE FROM names WHERE module = ?" [moduleId]
+  execute conn "DELETE FROM types WHERE module = ?" [moduleId]
+  execute conn "DELETE FROM thRanges WHERE module = ?" [moduleId]
+  execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
+  execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
 
 reinitializeTablesIfNeeded :: Connection -> IO ()
 reinitializeTablesIfNeeded conn = do

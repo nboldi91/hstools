@@ -151,7 +151,7 @@ touchingChanges diffs (SourceRange start end) = (intersecting, nonIntersecting)
 -- extending to encompass all existing changes around it
 addExtraChange :: FileLines -> SourceRewrite -> (FileLines, SourceDiffs) -> (FileLines, SourceDiffs)
 addExtraChange compiledContent rewrite@(SourceRewrite start end replacement) (actualContent, diffs) 
-  = trace ("### addExtraChange: " ++ show replacementDSP ++ "\n" ++ show origRange ++ "\n" ++ show singletonDiffs ++ "\n" ++ show (affectedDiffs, unaffectedDiffs) ++ "\n" ++ show origRangeToReDiff ++ "\n" ++ show newestRangeToReDiff ++ "\n" ++ show newContent ++ "\n" ++ show reDiffs ++ "\n###") $ (newContent, newDiffs)
+  = (newContent, newDiffs)
   where
     newDiffs
       = if null affectedDiffs

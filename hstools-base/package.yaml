@@ -29,6 +29,8 @@ library:
   dependencies:
     - postgresql-simple
     - time
+    - bytestring
+    - HMock
   ghc-options:
     - -W
     - -Werror

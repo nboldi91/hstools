@@ -41,9 +41,10 @@ packages:
 #   commit: e7b331f14bcffb8367cd58fbfc8b40ec7642100a
 #
 extra-deps:
-  - lsp-1.5.0.0@sha256:1ad138526f9177965d4b5b01f9074fe0475636b2c563dcc7036fb6908f8e6189,5382
-  - lsp-types-1.5.0.0@sha256:7ed97bbc9290ad6ffb9b5a8e082226783c710fff9e4ca2df4c578b065997b1ea,4301
-  - co-log-core-0.3.1.0@sha256:9794bdedd1391decd0e22bdfe2b11abcb42e6cff7a4531e1f8882890828f4e63,3816
+  - lsp-1.6.0.0@sha256:2b95e406cc85ffa95406ae8ad7d16b82283a6ca2fcb7ea5308a4ef3e6d6e68e6,4397
+  - lsp-types-1.6.0.0@sha256:06be28f931eff0b58bc7210f0567ae07713f98735b5a8fb8a6b7adde43d7c782,5690
+  - lsp-test-0.14.1.0@sha256:a535014ed008a6584cd3c59d31435d046aa3d346ce9a36a4f6e006586e29b4a4,4852
+  - co-log-core-0.3.1.0
   - ../hstools-base
 
 # Override default flag values for local packages and extra-deps

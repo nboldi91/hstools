@@ -25,11 +25,24 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
+    - Language.Haskell.HsTools.LspServer
     - Language.Haskell.HsTools.LinesDiff
   dependencies:
     - Diff
     - containers
     - split
+    - hstools-base
+    - lsp >= 1.5
+    - lsp-types >= 1.5
+    - text
+    - lens
+    - postgresql-simple
+    - bytestring
+    - aeson
+    - vector
+    - mtl
+    - time
+    - co-log-core
 
 executables:
   hstools-lsp:
@@ -42,17 +55,6 @@ executables:
     dependencies:
     - hstools-lsp
     - hstools-base
-    - lsp >= 1.5
-    - lsp-types >= 1.5
-    - text
-    - lens
-    - postgresql-simple
-    - bytestring
-    - aeson
-    - vector
-    - mtl
-    - time
-    - containers
 
 tests:
   hstools-lsp-tests:
@@ -62,8 +64,20 @@ tests:
     - -threaded
     dependencies:
     - hstools-lsp
+    - hstools-base
     - base
     - containers
     - HUnit
     - HTF
+    - lsp-test
+    - lsp-types
+    - lsp
+    - text
+    - process
+    - postgresql-simple
+    - aeson
+    - bytestring
+    - time
+    - directory
+    - filepath
 

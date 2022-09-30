@@ -75,8 +75,6 @@ realSrcSpanToNodePos span
     start = realSrcSpanStart span
     end = realSrcSpanEnd span
 
-data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
-
 nameNamespace :: Name -> Maybe Namespace
 nameNamespace n 
   | isTyVarName n = Just TyVarNS
