@@ -1,213 +1,35 @@
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeApplications #-}
-{-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ConstraintKinds #-}
-{-# LANGUAGE UndecidableInstances #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE ConstraintKinds #-}
 
-module Language.Haskell.HsTools.PersistNameInfo where
+module Language.Haskell.HsTools.Plugin.Class where
 
-import Control.Monad.Writer
 import Control.Monad.Reader
+import Control.Monad.Writer
 import qualified Data.Map as M
-import Data.Maybe
-import Database.PostgreSQL.Simple (Connection)
 
-import HsDecls
-import HsExtension
-import HsBinds
-import HsTypes
-import Outputable
-import SrcLoc
 import Bag
-import HsExpr
-import Name
-import Module
-import Unique
-import HsPat
 import BooleanFormula
-import TcRnTypes
-import Var
-import TyCoRep
+import HsBinds
+import HsDecls
+import HsExpr
+import HsExtension
+import HsPat
+import HsTypes
+import Module
+import Name
+import Outputable
 import PlaceHolder
+import SrcLoc
+import TyCoRep
+import Unique
+import Var
 
-import Language.Haskell.HsTools.Database
-
-data NameRecord = NameRecord
-  { nmName :: String
-  , nmNamespace :: Maybe Namespace
-  , nmIsDefined :: Bool
-  , nmPos :: NodePos
-  } deriving Show
-
-data NodePos = NodePos
-  { npStartRow :: Int
-  , npStartCol :: Int
-  , npEndRow :: Int
-  , npEndCol :: Int
-  } deriving (Eq, Ord)
-
-instance Show NodePos where
-  show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec
-
-containsNP :: NodePos -> NodePos -> Bool
-NodePos sr1 sc1 er1 ec1 `containsNP` NodePos sr2 sc2 er2 ec2
-  = (sr1 < sr2 || (sr1 == sr2 && sc1 <= sc2)) && (er1 > er2 || (er1 == er2 && ec1 >= ec2))
-
-srcSpanToNodePos :: SrcSpan -> Maybe NodePos
-srcSpanToNodePos (RealSrcSpan span) = Just $ realSrcSpanToNodePos span
-srcSpanToNodePos _ = Nothing
-
-realSrcSpanToNodePos :: RealSrcSpan -> NodePos
-realSrcSpanToNodePos span
-  = (NodePos (srcLocLine start) (srcLocCol start) (srcLocLine end) (srcLocCol end))
-  where
-    start = realSrcSpanStart span
-    end = realSrcSpanEnd span
-
-nameNamespace :: Name -> Maybe Namespace
-nameNamespace n 
-  | isTyVarName n = Just TyVarNS
-  | isTyConName n = Just TyConNS
-  | isDataConName n = Just DataConNS
-  | isValName n = Just ValNS
-  | isVarName n = Just VarNS
-  | otherwise = Nothing
-
-
-data TypeRecord = TypeRecord
-  { trAstNode :: Int
-  , trType :: String
-  } deriving Show
-
-data NameAndTypeRecord = NameAndTypeRecord
-  { ntrName :: String
-  , ntrNamespace :: Maybe Namespace
-  , ntrIsDefined :: Bool
-  , ntrType :: Maybe String
-  , ntrPos :: NodePos
-  } deriving Show
-
--- TODO: look up by the name first and then by the location
-
-data StoreParams = StoreParams
-  { spIsVerbose :: Bool
-  , spConnection :: Connection
-  , spModule :: (String, Int)
-  }
-
-storeTypes :: StoreParams -> TcGblEnv -> IO ()
-storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    astNodes <- getAstNodes conn moduleId
-    let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
-                                          -> (NodePos startRow startColumn endRow endColumn, astId)) 
-                                      astNodes
-    context <- defaultStoreContext conn moduleId moduleName
-    ((), types) <- runWriterT (runReaderT storeEnv context{ scNodeMap = astNodeMap })
-    when isVerbose $ do
-      putStrLn "### Storing types:"
-      mapM_ print types
-    persistTypes conn (map convertType types)
-  where
-    convertType (TypeRecord astNode typ) = (moduleId, astNode, typ)
-    storeEnv = do
-      -- TODO: finish storing types
-      store (tcg_binds env)
-      --store (tcg_sigs env)
-      --store (tcg_imp_specs env)
-      --store (tcg_warns env)
-      --store (tcg_anns env)
-      --store (tcg_tcs env)
-      --store (tcg_insts env)
-      --store (tcg_fam_insts env)
-      --store (tcg_rules env)
-      --store (tcg_fords env)
-      --store (tcg_patsyns env)
-      --store (tcg_doc_hdr env)
-
-storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
-storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
-    context <- defaultStoreContext conn moduleId moduleName
-    ((), names) <- runWriterT (runReaderT (store gr) context)
-    when isVerbose $ do
-      putStrLn "### Storing names:"
-      mapM_ print names
-    persistNames conn moduleId names
-
-persistNames :: Connection -> Int -> [NameRecord] -> IO ()
-persistNames conn moduleId names = do
-    astIds <- persistAst conn (map convertLocation names)
-    persistName conn (map convertName (names `zip` astIds))
-  where
-    convertName ((NameRecord name namespace isDefined _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined)
-    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
-      = (moduleId, startRow, startColumn, endRow, endColumn)
-
-storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
-storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = do
-    context <- defaultStoreContext conn moduleId moduleName
-    ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
-    when isVerbose $ do
-      putStrLn "### Storing names and types for TH:"
-      mapM_ print namesAndTypes
-    persistNamesAndTypes conn moduleId namesAndTypes
-    persistTHRange conn (getLoc expr) moduleId namesAndTypes
-
-persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
-persistNamesAndTypes conn moduleId namesAndTypes = do
-    astIds <- persistAst conn (map convertLocation namesAndTypes)
-    persistName conn (map convertName (namesAndTypes `zip` astIds))
-    persistTypes conn (catMaybes $ map convertType (namesAndTypes `zip` astIds))
-  where
-    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
-    convertType (NameAndTypeRecord { ntrType }, id) = fmap (moduleId, id :: Int,) ntrType
-    convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
-      = (moduleId, startRow, startColumn, endRow, endColumn)
-
-persistTHRange :: Connection -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
-persistTHRange conn (RealSrcSpan sp) moduleId records = do
-  let nodePos = realSrcSpanToNodePos sp
-  astNode <- if nodePos `elem` (map ntrPos records)
-    then getAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
-    else insertAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
-  persistTHRange' conn moduleId astNode
-persistTHRange _ _ _ _ = return () 
-
-type StoreM r = ReaderT StoreContext (WriterT [r] IO)
-
-data StoreContext = StoreContext
-  { scModuleName :: String
-  , scSpan :: SrcSpan
-  , scDefining :: Bool
-  , scNodeMap :: M.Map NodePos Int -- used to associate types with locations
-  , scDefinition :: DefinitionContext
-  , scThSpans :: [NodePos]
-  }
-
-defaultStoreContext :: Connection -> Int -> String -> IO StoreContext
-defaultStoreContext conn moduleId moduleName = do
-  thSpans <- getTHRanges conn moduleId
-  return $ StoreContext
-    { scModuleName = moduleName
-    , scSpan = noSrcSpan
-    , scDefining = False
-    , scNodeMap = M.empty
-    , scDefinition = Root
-    , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
-    }
-
-data DefinitionContext = Root | InstanceDefinition
-  deriving Eq
+import Language.Haskell.HsTools.Plugin.Monad
+import Language.Haskell.HsTools.Plugin.Types
 
 type IsGhcPass p r =
   ( HaskellAst Name r -- skip
@@ -220,15 +42,6 @@ type IsGhcPass p r =
   , HaskellAst (XCFieldOcc (GhcPass p)) r
   , HaskellAst (NameOrRdrName (IdP (GhcPass p))) r
   )
-
-defining :: StoreM r a -> StoreM r a
-defining = local (\l -> l { scDefining = True })
-
-withSpan :: SrcSpan -> StoreM r a -> StoreM r a
-withSpan span = local (\l -> l { scSpan = span })
-
-definitionContext :: DefinitionContext -> StoreM r a -> StoreM r a
-definitionContext def = local (\l -> l { scDefinition = def })
 
 class HaskellAst a r where
     store :: a -> StoreM r ()

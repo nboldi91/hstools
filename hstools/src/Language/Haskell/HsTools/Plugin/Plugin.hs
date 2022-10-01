@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
-module Language.Haskell.HsTools.Plugin where
+module Language.Haskell.HsTools.Plugin.Plugin where
 
 import Control.Monad.IO.Class
 import Control.Monad
@@ -22,7 +22,8 @@ import HsExpr
 import IOEnv
 import SrcLoc
 
-import Language.Haskell.HsTools.PersistNameInfo
+import Language.Haskell.HsTools.Plugin.PersistNameInfo
+import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Database
 
 plugin :: Plugin

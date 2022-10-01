@@ -25,8 +25,11 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
-    - Language.Haskell.HsTools.Plugin
-    - Language.Haskell.HsTools.Utils.ShowTable
+    - Language.Haskell.HsTools.Plugin.Plugin
+    - Language.Haskell.HsTools.Plugin.PersistNameInfo
+    - Language.Haskell.HsTools.Plugin.Monad
+    - Language.Haskell.HsTools.Plugin.Class
+    - Language.Haskell.HsTools.Plugin.Types
   dependencies:
     - hstools-base
     - ghc
