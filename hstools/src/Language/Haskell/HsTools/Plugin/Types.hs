@@ -5,6 +5,8 @@ import Database.PostgreSQL.Simple (Connection)
 import Name
 import SrcLoc
 
+import Language.Haskell.HsTools.Database
+
 data NameRecord = NameRecord
   { nmName :: String
   , nmNamespace :: Maybe Namespace
@@ -39,8 +41,6 @@ data StoreParams = StoreParams
   , spConnection :: Connection
   , spModule :: (String, Int)
   }
-
-data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
 
 instance Show NodePos where
   show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec

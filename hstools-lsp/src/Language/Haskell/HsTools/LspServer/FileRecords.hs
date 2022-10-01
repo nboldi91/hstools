@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Language.Haskell.HsTools.LspServer.FileRecords where
 
 import Control.Concurrent.MVar
@@ -36,12 +37,12 @@ recordFileOpened conn fp content mv
 
 recordFileClosed :: Connection -> FilePath -> FileRecords -> IO ()
 recordFileClosed conn fp mv
-  = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= \r -> return $ Map.insert fp r frs
+  = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= return . maybe frs (\r -> Map.insert fp r frs)
   where
     updateRecord (Just (OpenFileRecord _diffs _compiledContent _currentContent)) = do
       modifiedDiffs <- getModifiedFileDiffs conn fp
-      return $ FileRecord $ maybe Map.empty (Map.fromAscList . map read . lines) modifiedDiffs
-    updateRecord _ = error $ "recordFileClosed: file " ++ fp ++ " should have been on record"
+      return $ Just $ FileRecord $ maybe Map.empty (Map.fromAscList . map read . lines) modifiedDiffs
+    updateRecord fileRecord = return fileRecord
 
 markFileRecordsClean :: [FilePath] -> FileRecords -> IO ()
 markFileRecordsClean files

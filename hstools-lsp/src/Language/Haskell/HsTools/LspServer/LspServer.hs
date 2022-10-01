@@ -35,6 +35,7 @@ import Language.Haskell.HsTools.LspServer.Monad
 import Language.Haskell.HsTools.LspServer.Notifications
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.HandleErrors
 import Language.Haskell.HsTools.Database
 
 mainWithHandles :: Handle -> Handle -> IO Int
@@ -57,54 +58,51 @@ handlers = mconcat
       when (isNothing (cfConnection cfg))
         tryToConnectToDB
       
-  , requestHandler STextDocumentDefinition $ \req responder -> runInContext "Definition" $ do
+  , requestHandler STextDocumentDefinition $ \req responder -> handlerCtx "STextDocumentDefinition" $ \conn -> do
       let RequestMessage _ _ _ (DefinitionParams (TextDocumentIdentifier uri) pos _ _) = req
-      withConnection $ \conn ->
-        ensureFileLocationRequest uri responder $ \file -> do
-          rewrites <- getRewrites file
-          case newToOriginalPos rewrites (posToSP pos) of
-            Right originalPos -> do
-              names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (Just True)
-              liftLSP $ responder $ Right $ InR $ InL $ LSP.List $ take 1 $ catMaybes $ map (lineToLoc rewrites) names
-            Left _ -> liftLSP $ responder $ Right $ InR $ InL $ LSP.List [] -- the source position was not in the compiled source code
+      ensureFileLocationRequest uri responder $ \file -> do
+        rewrites <- getRewrites file
+        case newToOriginalPos rewrites (posToSP pos) of
+          Right originalPos -> do
+            names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (Just True)
+            liftLSP $ responder $ Right $ InR $ InL $ LSP.List $ take 1 $ catMaybes $ map (lineToLoc rewrites) names
+          Left _ -> liftLSP $ responder $ Right $ InR $ InL $ LSP.List [] -- the source position was not in the compiled source code
 
-  , requestHandler STextDocumentReferences $ \req responder -> runInContext "References" $ do
+  , requestHandler STextDocumentReferences $ \req responder -> handlerCtx "STextDocumentReferences" $ \conn -> do
       let RequestMessage _ _ _ (ReferenceParams (TextDocumentIdentifier uri) pos _ _ (ReferenceContext includeDefinition)) = req
-      withConnection $ \conn ->
-        ensureFileLocationRequest uri responder $ \file -> do
-          rewrites <- getRewrites file
-          case newToOriginalPos rewrites (posToSP pos) of
-            Right originalPos -> do
-              names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (if not includeDefinition then Just False else Nothing)
-              liftLSP $ responder $ Right $ LSP.List $ catMaybes $ map (lineToLoc rewrites) names
-            Left _ -> liftLSP $ responder $ Right $ LSP.List [] -- the source position was not in the compiled source code
+      ensureFileLocationRequest uri responder $ \file -> do
+        rewrites <- getRewrites file
+        case newToOriginalPos rewrites (posToSP pos) of
+          Right originalPos -> do
+            names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (if not includeDefinition then Just False else Nothing)
+            liftLSP $ responder $ Right $ LSP.List $ catMaybes $ map (lineToLoc rewrites) names
+          Left _ -> liftLSP $ responder $ Right $ LSP.List [] -- the source position was not in the compiled source code
 
-  , requestHandler STextDocumentHover $ \req responder -> runInContext "Hover" $ do
+  , requestHandler STextDocumentHover $ \req responder -> handlerCtx "STextDocumentHover" $ \conn -> do
       let RequestMessage _ _ _ (HoverParams (TextDocumentIdentifier uri) pos _workDone) = req
-      withConnection $ \conn ->
-        ensureFileLocationRequest uri responder $ \file -> do
-          rewrites <- getRewrites file
-          case newToOriginalPos rewrites (posToSP pos) of
-            Right originalPos -> do
-              let lineNum = fromIntegral (spLine originalPos)
-                  columnNum = fromIntegral (spCol originalPos)
-              names <- liftIO $ getHoverInfo conn file lineNum columnNum
-              case names of
-                [] -> liftLSP $ responder (Right Nothing)  
-                (typ, isDefined, name, startLine, startColumn, endLine, endColumn):_ -> 
-                  let ms = HoverContents $ markedUpContent "hstools" $ T.pack
-                              $ name ++ (if isDefined == True then " defined here" else "")
-                                  ++ (maybe "" ("\n  :: " ++) typ)
-                      origRange = SourceRange (SP startLine startColumn) (SP endLine endColumn)
-                      newRange = originalToNewRangeStrict rewrites origRange
-                      rsp = Hover ms (fmap rangeToLSP newRange)
-                  in liftLSP $ responder (Right $ Just rsp)  
-            Left _ -> liftLSP $ responder (Right Nothing) -- the source position was not in the compiled source code
+      ensureFileLocationRequest uri responder $ \file -> do
+        rewrites <- getRewrites file
+        case newToOriginalPos rewrites (posToSP pos) of
+          Right originalPos -> do
+            let lineNum = fromIntegral (spLine originalPos)
+                columnNum = fromIntegral (spCol originalPos)
+            names <- liftIO $ getHoverInfo conn file lineNum columnNum
+            case names of
+              [] -> liftLSP $ responder (Right Nothing)  
+              (typ, isDefined, name, startLine, startColumn, endLine, endColumn):_ -> 
+                let ms = HoverContents $ markedUpContent "hstools" $ T.pack
+                            $ name ++ (if isDefined == True then " defined here" else "")
+                                ++ (maybe "" ("\n  :: " ++) typ)
+                    origRange = SourceRange (SP startLine startColumn) (SP endLine endColumn)
+                    newRange = originalToNewRangeStrict rewrites origRange
+                    rsp = Hover ms (fmap rangeToLSP newRange)
+                in liftLSP $ responder (Right $ Just rsp)  
+          Left _ -> liftLSP $ responder (Right Nothing) -- the source position was not in the compiled source code
 
 
   , notificationHandler SCancelRequest $ const $ return ()
 
-  , notificationHandler (SCustomMethod "CleanDB") $ \message -> runInContext "CleanDB" $ withConnection $ \conn -> do
+  , notificationHandler (SCustomMethod "CleanDB") $ \message -> handlerCtx "CleanDB" $ \conn -> do
       let NotificationMessage _ _ args = message
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
@@ -115,7 +113,7 @@ handlers = mconcat
         _ -> sendError $ T.pack $ "Unrecognized CleanDB argument: " ++ show args
       updateFileStates
 
-  , notificationHandler SWorkspaceDidChangeWatchedFiles $ \message -> runInContext "FileChange" $ withConnection $ \conn -> do
+  , notificationHandler SWorkspaceDidChangeWatchedFiles $ \message -> handlerCtx "FileChange" $ \conn -> do
       let NotificationMessage _ _ (DidChangeWatchedFilesParams (LSP.List fileChanges)) = message
       forM_ fileChanges $ \(FileEvent uri _) -> ensureFileLocation uri $ \filePath -> do
         isFileOpen <- liftLSP LSP.getConfig >>= liftIO . isFileOpen filePath . cfFileRecords
@@ -132,14 +130,14 @@ handlers = mconcat
             Nothing -> return () -- the file is not compiled yet, nothing to do
         updateFileStatesFor filePath
   
-  , notificationHandler STextDocumentDidChange $ \msg -> runInContext "STextDocumentDidChange" $ do
+  , notificationHandler STextDocumentDidChange $ \msg -> handlerCtx "STextDocumentDidChange" $ \_ -> do
       let NotificationMessage _ _ (DidChangeTextDocumentParams (VersionedTextDocumentIdentifier uri _version) (LSP.List changes)) = msg
       ensureFileLocation uri $ \filePath -> do
         let goodChanges = catMaybes $ map textDocChangeToSD changes
         liftLSP LSP.getConfig >>= \cf -> liftIO $ updateSavedFileRecords filePath goodChanges (cfFileRecords cf)
         updateFileStatesFor filePath
 
-  , notificationHandler STextDocumentDidSave $ \msg -> runInContext "STextDocumentDidSave" $ withConnection $ \conn -> do
+  , notificationHandler STextDocumentDidSave $ \msg -> handlerCtx "STextDocumentDidSave" $ \conn -> do
       let NotificationMessage _ _ (DidSaveTextDocumentParams (TextDocumentIdentifier uri) _reason) = msg
       ensureFileLocation uri $ \filePath -> do
         cfg <- LSP.getConfig
@@ -148,16 +146,18 @@ handlers = mconcat
         let serializedDiff = serializeSourceDiffs fileDiffs
         void $ liftIO $ updateFileDiffs conn filePath currentTime (Just serializedDiff)
   
-  , notificationHandler STextDocumentDidOpen $ \msg -> runInContext "STextDocumentDidOpen" $ withConnection $ \conn -> do
+  , notificationHandler STextDocumentDidOpen $ \msg -> handlerCtx "STextDocumentDidOpen" $ \conn -> do
       let NotificationMessage _ _ (DidOpenTextDocumentParams (TextDocumentItem uri _langId _version content)) = msg
       ensureFileLocation uri $ \filePath ->
         liftLSP LSP.getConfig >>= \cf -> liftIO $ recordFileOpened conn filePath content (cfFileRecords cf)
   
-  , notificationHandler STextDocumentDidClose $ \msg -> runInContext "STextDocumentDidClose" $ withConnection $ \conn -> do
+  , notificationHandler STextDocumentDidClose $ \msg -> handlerCtx "STextDocumentDidClose" $ \conn -> do
       let NotificationMessage _ _ (DidCloseTextDocumentParams (TextDocumentIdentifier uri)) = msg
       ensureFileLocation uri $ \filePath ->
         liftLSP LSP.getConfig >>= \cf -> liftIO $ recordFileClosed conn filePath (cfFileRecords cf)
   ]
+
+handlerCtx ctx action = runInContext ctx $ withConnection $ \conn -> handleErrorsCtx conn $ action conn
 
 updateFileStates :: LspMonad ()
 updateFileStates = do
@@ -182,7 +182,7 @@ tryToConnectToDB = do
   config <- liftLSP LSP.getConfig
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
-    Right conn -> do 
+    Right conn -> handleErrors conn "tryToConnectToDB" $ do 
       sendMessage "Connected to DB"
       liftIO $ reinitializeTablesIfNeeded conn
       modifiedDiffs <- liftIO $ getAllModifiedFileDiffs conn 

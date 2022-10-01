@@ -15,6 +15,8 @@ import Database.PostgreSQL.Simple
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
 
+data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
+
 getCompiledTime :: Connection -> FilePath -> IO (Maybe UTCTime)
 getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only filePath)
 
@@ -119,6 +121,10 @@ getHoverInfo conn file row col =
     |]
     (file, row, row, col, col)
 
+logErrorMessage :: Connection -> UTCTime -> String -> String -> IO ()
+logErrorMessage conn time context message
+  = void $ execute conn "INSERT INTO errorLogs (time, context, message) VALUES (?, ?, ?)" (time, context, message)
+
 listenToModuleClean :: Connection -> IO ()
 listenToModuleClean conn = void $ execute_ conn "LISTEN module_clean"
 
@@ -156,13 +162,19 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 1
+databaseSchemaVersion = 2
 
 databaseSchema :: Query
 databaseSchema = [sql|
 
   CREATE TABLE version ( versionNumber INT NOT NULL );
   INSERT INTO version (versionNumber) VALUES (?);
+
+  CREATE TABLE errorLogs
+    ( time TIMESTAMP WITH TIME ZONE NOT NULL
+    , context TEXT NOT NULL
+    , message TEXT NOT NULL
+    );
 
   CREATE TABLE modules
     ( moduleId SERIAL PRIMARY KEY

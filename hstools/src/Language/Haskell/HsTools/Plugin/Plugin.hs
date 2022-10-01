@@ -25,6 +25,7 @@ import SrcLoc
 import Language.Haskell.HsTools.Plugin.StoreInfo
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.HandleErrors
 
 plugin :: Plugin
 plugin = defaultPlugin 
@@ -100,7 +101,7 @@ runStage clOpts caption condition newStage action = withDB clOpts $ \conn -> do
       modName = moduleNameString $ moduleName mod
       localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc $ env_gbl env
   fullFilePath <- liftIO $ canonicalizePath localFilePath
-  liftIO $ withTransaction conn $ do
+  liftIO $ handleErrors conn ("plugin: " ++ caption) $ withTransaction conn $ do
     moduleIdAndState <- getModuleIdLoadingState conn fullFilePath
     case moduleIdAndState of
       Just (modId, status) | condition status -> do 

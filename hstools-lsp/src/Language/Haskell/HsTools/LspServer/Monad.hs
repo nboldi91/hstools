@@ -11,6 +11,7 @@ import Language.LSP.Types as LSP
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.HandleErrors
 
 data LspContext = LspContext { ctOperation :: String }
 
@@ -60,3 +61,8 @@ sendError = liftLSP . sendNotification SWindowShowMessage . ShowMessageParams Mt
 
 logMessage :: T.Text -> LspMonad ()
 logMessage = liftLSP . sendNotification SWindowLogMessage . LogMessageParams MtInfo
+
+handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
+handleErrorsCtx conn action = do
+  operation <- asks ctOperation
+  handleErrors conn ("During operation " ++ operation) action

@@ -26,11 +26,13 @@ library:
   source-dirs: src
   exposed-modules:
     - Language.Haskell.HsTools.Database
+    - Language.Haskell.HsTools.HandleErrors
   dependencies:
     - postgresql-simple
     - time
     - bytestring
     - containers
+    - exceptions
   ghc-options:
     - -W
     - -Werror
