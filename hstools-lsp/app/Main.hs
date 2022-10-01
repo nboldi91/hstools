@@ -1,4 +1,4 @@
-import Language.Haskell.HsTools.LspServer
+import Language.Haskell.HsTools.LspServer.LspServer
 import System.IO
 
 main :: IO Int

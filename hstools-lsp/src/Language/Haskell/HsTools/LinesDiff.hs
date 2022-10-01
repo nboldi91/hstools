@@ -27,7 +27,7 @@ subtractDsp (DSP dl dc el) (SP line col)
 -- right side must be below
 addDsps :: DSP -> DSP -> DSP
 addDsps (DSP dl1 dc1 el1) (DSP 0 dc2 el2) | el1 == el2 = DSP dl1 (dc1 + dc2) el2
-addDsps (DSP dl1 dc1 el1) (DSP dl2 dc2 el2) = DSP (dl1 + dl2) dc2 el2
+addDsps (DSP dl1 _dc1 _el1) (DSP dl2 dc2 el2) = DSP (dl1 + dl2) dc2 el2
 
 spDiff :: SP -> SP -> DSP
 spDiff (SP l1 c1) (SP l2 c2) = DSP (l1 - l2) (c1 - c2) l2
@@ -71,7 +71,7 @@ newToOriginalRangeStrict diffs (SourceRange start end)
       _ -> Nothing
 
 newToOriginalPos :: SourceDiffs -> SP -> Either SourceRange SP
-newToOriginalPos diffs pos@(SP l c) = maybe (Right newPos) Left rewriterRange
+newToOriginalPos diffs pos@(SP l _) = maybe (Right newPos) Left rewriterRange
   where
     newPos = subtractDsp posDiff pos 
     posDiff = case changesBefore of
@@ -104,7 +104,7 @@ originalToNewRangeStrict diffs (SourceRange start end)
       _ -> Nothing
 
 originalToNewPos :: SourceDiffs -> SP -> Either SourceRange SP
-originalToNewPos diffs pos@(SP l c) = maybe (Right newPos) Left rewriterRange
+originalToNewPos diffs pos@(SP l _) = maybe (Right newPos) Left rewriterRange
   where
     newPos = addDsp posDiff pos 
     posDiff = case changesBefore of
@@ -154,7 +154,7 @@ toFileLines :: String -> FileLines
 toFileLines = splitOn "\n"
 
 applySourceDiff :: SourceRewrite -> FileLines -> FileLines
-applySourceDiff (SourceRewrite start@(SP sl sc) end replacement) lns
+applySourceDiff (SourceRewrite start end replacement) lns
   = concatFileLines [prefix, toFileLines replacement, postfix]
   where
     (_, postfix) = breakAtDPos start diff rest

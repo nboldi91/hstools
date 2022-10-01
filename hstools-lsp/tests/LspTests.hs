@@ -24,7 +24,7 @@ import Language.LSP.Test
 import Language.LSP.Types
 
 import Language.Haskell.HsTools.Database
-import Language.Haskell.HsTools.LspServer (mainWithHandles)
+import Language.Haskell.HsTools.LspServer.LspServer (mainWithHandles)
 
 assertEqual exp act = liftIO $ F.assertEqual exp act
 

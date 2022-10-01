@@ -25,7 +25,12 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
-    - Language.Haskell.HsTools.LspServer
+    - Language.Haskell.HsTools.LspServer.LspServer
+    - Language.Haskell.HsTools.LspServer.State
+    - Language.Haskell.HsTools.LspServer.Utils
+    - Language.Haskell.HsTools.LspServer.FileRecords
+    - Language.Haskell.HsTools.LspServer.Notifications
+    - Language.Haskell.HsTools.LspServer.Monad
     - Language.Haskell.HsTools.LinesDiff
   dependencies:
     - Diff
@@ -43,6 +48,9 @@ library:
     - mtl
     - time
     - co-log-core
+  ghc-options:
+    - -W
+    - -Werror
 
 executables:
   hstools-lsp:
