@@ -15,7 +15,7 @@
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE RecordWildCards #-}
 
-module Language.Haskell.HsTools.Plugin.PersistNameInfo where
+module Language.Haskell.HsTools.Plugin.StoreInfo where
 
 import Control.Monad.Writer
 import Control.Monad.Reader

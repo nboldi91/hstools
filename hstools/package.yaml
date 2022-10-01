@@ -26,7 +26,7 @@ library:
   source-dirs: src
   exposed-modules:
     - Language.Haskell.HsTools.Plugin.Plugin
-    - Language.Haskell.HsTools.Plugin.PersistNameInfo
+    - Language.Haskell.HsTools.Plugin.StoreInfo
     - Language.Haskell.HsTools.Plugin.Monad
     - Language.Haskell.HsTools.Plugin.Class
     - Language.Haskell.HsTools.Plugin.Types

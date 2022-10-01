@@ -22,7 +22,7 @@ import HsExpr
 import IOEnv
 import SrcLoc
 
-import Language.Haskell.HsTools.Plugin.PersistNameInfo
+import Language.Haskell.HsTools.Plugin.StoreInfo
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Database
 
