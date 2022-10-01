@@ -10,7 +10,7 @@ import Language.LSP.Types as LSP
 
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
-import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.LinesDiff
 
 data LspContext = LspContext { ctOperation :: String }
 

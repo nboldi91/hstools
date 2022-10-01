@@ -10,7 +10,6 @@ import qualified Data.Vector as V
 import Database.PostgreSQL.Simple (Connection)
 import Language.LSP.Types as LSP
 
-import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.LinesDiff
 
 textDocChangeToSD :: LSP.TextDocumentContentChangeEvent -> Maybe SourceRewrite

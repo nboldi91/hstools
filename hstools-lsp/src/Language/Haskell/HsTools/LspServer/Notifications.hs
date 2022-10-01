@@ -10,9 +10,9 @@ import Database.PostgreSQL.Simple (Connection)
 import qualified Database.PostgreSQL.Simple.Notification as SQL
 import Language.LSP.Types as LSP
 
-import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.LspServer.FileRecords
+import Language.Haskell.HsTools.LinesDiff
 
 -- Listens to the compile process changing the DB when the source is recompiled
 handleNotifications :: Connection -> FileRecords -> (FromServerMessage -> IO ()) -> IO ()

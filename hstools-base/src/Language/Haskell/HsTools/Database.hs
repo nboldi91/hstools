@@ -6,11 +6,9 @@ module Language.Haskell.HsTools.Database where
 import Control.Exception
 import Control.Monad
 import Data.Maybe
-import qualified Data.Map as Map
 import Data.Time.Clock
 import Data.String
 import Database.PostgreSQL.Simple.SqlQQ (sql)
-import Text.Read (readMaybe)
 
 import Database.PostgreSQL.Simple
 
@@ -230,32 +228,3 @@ databaseSchema = [sql|
     EXECUTE FUNCTION notifyModulesFunction();
 
 |]
-
-serializeSourceDiffs :: SourceDiffs -> String
-serializeSourceDiffs = unlines . map show . Map.toAscList 
-
-deserializeSourceDiffs :: String -> SourceDiffs
-deserializeSourceDiffs str
-  = Map.fromAscList $ map (\s -> fromMaybe (error $ "Can't deserialize source diff: " ++ show s) $ readMaybe s) $ lines str
-
-type SourceDiffs = Map.Map SP SourceDiffData
-
-type FileLines = [String]
-
-data SourceRange = SourceRange { srStart :: SP, srEnd :: SP }
-  deriving (Eq, Show, Read)
-
-data SourceDiffData = SourceDiffData { sddEnd :: SP, sddReplacement :: DSP }
-  deriving (Eq, Show, Read)
-
-data SourceDiff = SourceDiff { sdStart :: SP, sdEnd :: SP, sdReplacement :: DSP }
-  deriving (Eq, Show, Read)
-
-data SourceRewrite = SourceRewrite { srwStart :: SP, srwEnd :: SP, srwReplacement :: String }
-  deriving (Eq, Show, Read)
-
-data SP = SP { spLine :: Int, spCol :: Int }
-  deriving (Eq, Ord, Show, Read)
-
-data DSP = DSP { dspLine :: Int, dspCol :: Int, dspEndLine :: Int }
-  deriving (Eq, Ord, Show, Read)
