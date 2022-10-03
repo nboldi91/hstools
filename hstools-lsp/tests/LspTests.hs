@@ -8,8 +8,10 @@ module LspTests ( htf_thisModulesTests ) where
 import qualified Data.Text as T
 import Control.Concurrent (forkIO)
 import System.Process (createPipe)
+import Control.Exception
 import Control.Monad.IO.Class
 import Control.Monad
+import Data.List
 import Data.Time.Clock
 import qualified Data.Map as Map
 import qualified Data.ByteString.Char8 as BS
@@ -25,6 +27,8 @@ import Language.LSP.Types
 
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.LspServer.LspServer (mainWithHandles)
+import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.Utils
 
 assertEqual exp act = liftIO $ F.assertEqual exp act
 
@@ -77,6 +81,7 @@ test_hovering = do
     hover <- getHover doc (Position 0 5)
     assertEqual (Just (Hover (HoverContents $ MarkupContent MkMarkdown "\n```hstools\ny\n  :: ()\n```\n") $ Just $ Range (Position 0 4) (Position 0 5))) hover
 
+-- file changed during session in an open editor
 test_rewriteInEditor :: IO ()
 test_rewriteInEditor = do 
   conn <- connectPostgreSQL (BS.pack connectionString)
@@ -101,18 +106,49 @@ test_multipleRewritesInEditor = do
     definition <- getDefinitions doc (Position 3 5)
     assertEqual (InL [Location uri $ Range (Position 4 0) (Position 4 1)]) definition
 
--- test_rewriteSaved :: IO ()
--- test_rewriteSaved = do 
---   conn <- connectPostgreSQL (BS.pack connectionString)
---   cleanModulesFromDB conn testFilePrefix
---   (fileName, fileContent) <- setupSimpleTestFile conn
---   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
---   time <- getCurrentTime
---   updateFileDiffs conn fullFilePath time $ Just $ serializeSourceDiffs (Map.fromList [(SP 1 1, SourceDiffData (SP 1 1) (DSP 0 3 1))])
---   runTest $ do
---     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
---     definition <- getDefinitions doc (Position 1 8)
---     assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
+-- the file was modified in an earlier session
+test_rewriteRecorded :: IO ()
+test_rewriteRecorded = do 
+  conn <- connectPostgreSQL (BS.pack connectionString)
+  cleanModulesFromDB conn testFilePrefix
+  (fileName, fileContent) <- setupSimpleTestFile conn
+  fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
+  time <- getCurrentTime
+  updateFileDiffs conn fullFilePath time $ Just $ serializeSourceDiffs (Map.fromList [(SP 1 1, SourceDiffData (SP 1 1) (DSP 0 3 1))])
+  runTest $ do
+    doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
+    definition <- getDefinitions doc (Position 0 8)
+    assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
+
+-- the file was modified during the session while it is closed
+test_rewriteListener :: IO ()
+test_rewriteListener = do 
+  conn <- connectPostgreSQL (BS.pack connectionString)
+  cleanModulesFromDB conn testFilePrefix
+  (fileName, fileContent) <- setupSimpleTestFile conn
+  fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
+  withTestFile fullFilePath (T.unpack fileContent) $ do
+    runTest $ do
+      liftIO $ writeFile fullFilePath (unlines ["   x = y", "y = ()"])
+      doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
+      sendNotification SWorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams $ List [ FileEvent uri FcChanged ]
+      definition <- getDefinitions doc (Position 0 8)
+      assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
+
+-- the file was modified before the current session
+test_rewriteSaved :: IO ()
+test_rewriteSaved = do 
+  conn <- connectPostgreSQL (BS.pack connectionString)
+  cleanModulesFromDB conn testFilePrefix
+  (fileName, fileContent) <- setupSimpleTestFile conn
+  fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
+  withTestFile fullFilePath (unlines ["   x = y", "y = ()"]) $ do
+    currentTime <- getCurrentTime
+    setModificationTime fullFilePath (addUTCTime 1 currentTime)
+    runTest $ do
+      doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
+      definition <- getDefinitions doc (Position 0 8)
+      assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
 
 setupSimpleTestFile :: Connection -> IO (FilePath, T.Text)
 setupSimpleTestFile conn = do
@@ -143,4 +179,4 @@ vnms :: Maybe Int
 vnms = Just (fromEnum ValNS)
 
 testFilePrefix :: String
-testFilePrefix = "hstools-test"
+testFilePrefix = "hstools-test-temp"

@@ -31,11 +31,8 @@ library:
     - Language.Haskell.HsTools.LspServer.FileRecords
     - Language.Haskell.HsTools.LspServer.Notifications
     - Language.Haskell.HsTools.LspServer.Monad
-    - Language.Haskell.HsTools.LinesDiff
   dependencies:
-    - Diff
     - containers
-    - split
     - hstools-base
     - lsp >= 1.5
     - lsp-types >= 1.5

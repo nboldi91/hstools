@@ -18,7 +18,7 @@ import Control.Monad
 import Control.Exception
 import qualified Data.Text as T
 import qualified Data.Map as Map
-import Data.Maybe (fromMaybe, isNothing, catMaybes)
+import Data.Maybe (isNothing, catMaybes)
 import Data.Time.Clock
 import Database.PostgreSQL.Simple (connectPostgreSQL)
 import qualified Data.ByteString.Char8 as BS
@@ -37,6 +37,7 @@ import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.LinesDiff
 import Language.Haskell.HsTools.HandleErrors
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.Utils
 
 mainWithHandles :: Handle -> Handle -> IO Int
 mainWithHandles input output = do
@@ -121,8 +122,8 @@ handlers = mconcat
           compiledSource <- liftIO $ getCompiledSource conn filePath
           case compiledSource of
             Just source -> do
-              updatedSource <- liftIO $ readFile filePath
-              let fileDiffs = sourceDiffs startSP source updatedSource
+              updatedSource <- liftIO $ readFileContent filePath
+              let fileDiffs = maybe Map.empty (sourceDiffs startSP source) updatedSource
               liftLSP LSP.getConfig >>= \cf -> liftIO $ replaceSourceDiffs filePath fileDiffs $ cfFileRecords cf
               currentTime <- liftIO getCurrentTime
               let serializedDiff = nothingIfEmpty $ serializeSourceDiffs fileDiffs
@@ -185,8 +186,8 @@ tryToConnectToDB = do
     Right conn -> handleErrors conn "tryToConnectToDB" $ do 
       sendMessage "Connected to DB"
       liftIO $ reinitializeTablesIfNeeded conn
-      modifiedDiffs <- liftIO $ getAllModifiedFileDiffs conn 
-      let fileRecords = map (\(fp, diff) -> (fp, FileRecord $ fromMaybe Map.empty $ fmap deserializeSourceDiffs diff)) modifiedDiffs
+      modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged conn
+      let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
       liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
       liftLSP $ LSP.setConfig $ config { cfConnection = Just conn }
       updateFileStates

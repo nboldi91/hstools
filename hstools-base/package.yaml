@@ -27,12 +27,18 @@ library:
   exposed-modules:
     - Language.Haskell.HsTools.Database
     - Language.Haskell.HsTools.HandleErrors
+    - Language.Haskell.HsTools.LinesDiff
+    - Language.Haskell.HsTools.Utils
   dependencies:
     - postgresql-simple
     - time
     - bytestring
     - containers
     - exceptions
+    - directory
+    - Diff
+    - split
+    - filepath
   ghc-options:
     - -W
     - -Werror

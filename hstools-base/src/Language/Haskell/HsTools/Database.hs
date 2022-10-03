@@ -38,8 +38,8 @@ updateFileDiffs :: Connection -> FilePath -> UTCTime -> Maybe String -> IO ()
 updateFileDiffs conn filePath modifiedTime serializedDiff = void $
   execute conn "UPDATE modules SET modifiedTime = ?, modifiedFileDiffs = ? WHERE filePath = ?" (modifiedTime, serializedDiff, filePath)
 
-getAllModifiedFileDiffs :: Connection -> IO [(String, Maybe String)]
-getAllModifiedFileDiffs conn = query_ conn "SELECT filePath, modifiedFileDiffs FROM modules"
+getAllModifiedFileDiffs :: Connection -> IO [(FilePath, Maybe String, Maybe UTCTime)]
+getAllModifiedFileDiffs conn = query_ conn "SELECT filePath, modifiedFileDiffs, modifiedTime FROM modules"
 
 getCompiledSource :: Connection -> FilePath -> IO (Maybe String)
 getCompiledSource conn filePath

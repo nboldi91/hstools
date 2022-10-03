@@ -2,6 +2,7 @@
 module Language.Haskell.HsTools.LspServer.FileRecords where
 
 import Control.Concurrent.MVar
+import Control.Monad
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Connection)
@@ -9,6 +10,7 @@ import Database.PostgreSQL.Simple (Connection)
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.Utils
 
 data FileRecord
   = FileRecord { frDiffs :: SourceDiffs }
@@ -65,3 +67,23 @@ isFileOpen fp frsMVar = do
   return $ case Map.lookup fp frs of
     Just OpenFileRecord{} -> True
     _ -> False
+
+checkIfFilesHaveBeenChanged :: Connection -> IO [(String, SourceDiffs)]
+checkIfFilesHaveBeenChanged conn = do 
+  diffs <- getAllModifiedFileDiffs conn
+  forM diffs $ \(filePath, diff, modifiedTime) -> do
+    modificationTime <- getFileModificationTime filePath
+    case (modifiedTime, modificationTime) of
+      (Just recTime, Just modTime) | recTime < modTime -> updateDiffs filePath modTime
+      (Nothing, Just modTime) -> updateDiffs filePath modTime
+      _ -> return (filePath, maybe Map.empty deserializeSourceDiffs diff)
+  where
+    updateDiffs filePath modificationTime = do
+      fileContent <- readFileContent filePath
+      compiledSource <- getCompiledSource conn filePath
+      case (fileContent, compiledSource) of
+        (Just fc, Just cs) -> do
+          let newDiff = sourceDiffs (SP 1 1) cs fc
+          updateFileDiffs conn filePath modificationTime (Just $ serializeSourceDiffs newDiff)
+          return (filePath, newDiff)
+        _ -> return (filePath, Map.empty)

@@ -6,10 +6,11 @@ module Language.Haskell.HsTools.Plugin.Plugin where
 
 import Control.Monad.IO.Class
 import Control.Monad
-import System.Directory
-import Database.PostgreSQL.Simple (Connection, withTransaction, connectPostgreSQL)
 import qualified Data.ByteString.Char8 as BS
+import Data.Maybe
 import Data.Time.Clock
+import Database.PostgreSQL.Simple (Connection, withTransaction, connectPostgreSQL)
+import System.Directory
 
 import qualified FastString as FS
 import Plugins
@@ -26,6 +27,7 @@ import Language.Haskell.HsTools.Plugin.StoreInfo
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.HandleErrors
+import Language.Haskell.HsTools.Utils
 
 plugin :: Plugin
 plugin = defaultPlugin 
@@ -48,29 +50,25 @@ cleanAndRecordModule conn ms = do
   case ml_hs_file $ ms_location ms of
     Just filePath -> do
       fullPath <- canonicalizePath filePath
-      modificationTime <- getModificationTime fullPath
-      let roundedModificationTime = roundUTCTime modificationTime
+      maybeModificationTime <- getFileModificationTime fullPath
+      currentTime <- getCurrentTime
       compiledTime <- getCompiledTime conn fullPath
-      needsUpdate <- case compiledTime of
-        Nothing -> do
-          putStrLn $ "File " ++ fullPath ++ " not processed yet."
-          return True
-        Just dbModDate ->
-          if dbModDate < roundedModificationTime
-            then do putStrLn $ "File " ++ fullPath ++ " is processed but not up to date, cleaning" ++ "  " ++ show dbModDate ++ "   " ++ show roundedModificationTime 
+      needsUpdate <- case (compiledTime, maybeModificationTime) of
+        (Just dbModDate, Just modificationTime) ->
+          if dbModDate < modificationTime
+            then do putStrLn $ "File " ++ fullPath ++ " is processed but not up to date, cleaning" ++ "  " ++ show dbModDate ++ "   " ++ show modificationTime 
                     cleanModuleFromDB conn fullPath >> return True
             else do putStrLn $ "File " ++ fullPath ++ " is processed and up to date "
                     return False
+        _ -> do
+          putStrLn $ "File " ++ fullPath ++ " not processed yet."
+          return True
       if needsUpdate
           then do
-            content <- readFile fullPath
-            Just <$> insertModule conn fullPath roundedModificationTime (moduleNameString moduleName) (unitIdString unitId) content
+            content <- readFileContent fullPath
+            Just <$> insertModule conn fullPath (fromMaybe currentTime maybeModificationTime) (moduleNameString moduleName) (unitIdString unitId) (fromMaybe "" content)
           else return Nothing
     Nothing -> return Nothing
-
-roundUTCTime :: UTCTime -> UTCTime
-roundUTCTime (UTCTime day time) = UTCTime day (picosecondsToDiffTime $ round $ diffTimeToPicoseconds time)
-  where round = (* 10^8) . (`div` 10^8)
 
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
