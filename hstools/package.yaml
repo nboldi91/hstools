@@ -25,6 +25,7 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
+    - Language.Haskell.HsTools.Plugin
     - Language.Haskell.HsTools.Plugin.Plugin
     - Language.Haskell.HsTools.Plugin.StoreInfo
     - Language.Haskell.HsTools.Plugin.Monad
