@@ -13,11 +13,12 @@ import Control.Monad.IO.Class
 import Control.Monad
 import Data.List
 import Data.Time.Clock
+import Data.String
 import qualified Data.Map as Map
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
-import Database.PostgreSQL.Simple (Connection, connectPostgreSQL)
+import Database.PostgreSQL.Simple
 import System.Directory
 import System.FilePath
 
@@ -42,17 +43,32 @@ runTest session = do
 testConfig :: SessionConfig
 testConfig = defaultConfig { lspConfig = Just serverConfig }
 
+connectionStringWithoutDB :: String
+connectionStringWithoutDB = "postgresql://saver:saver@127.0.0.1:5432"
+
 connectionString :: String
-connectionString = "postgresql://saver:saver@127.0.0.1:5432/repo"
+connectionString = connectionStringWithoutDB ++ "/" ++ connectionDBName
+
+connectionDBName :: String
+connectionDBName = "lsptestrepo"
 
 serverConfig :: A.Value
 serverConfig = A.Object (A.singleton "hstools" $ A.Object (A.singleton "postgresqlConnectionString" $ A.String (T.pack connectionString)))
 
+withTestRepo :: (Connection -> IO ()) -> IO ()
+withTestRepo test = do 
+  conn <- connectPostgreSQL (BS.pack $ connectionStringWithoutDB ++ "/postgres")
+  createAndRun conn `finally` (execute_ conn (fromString $ "DROP DATABASE IF EXISTS " ++ connectionDBName))
+  where
+    createAndRun conn = void $ do
+      execute_ conn (fromString $ "CREATE DATABASE " ++ connectionDBName) 
+      testConn <- connectPostgreSQL (BS.pack connectionString)
+      test testConn
+      close testConn
 
 test_simpleGotoDefinition :: IO ()
-test_simpleGotoDefinition = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_simpleGotoDefinition = withTestRepo $ \conn -> do
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
@@ -60,9 +76,8 @@ test_simpleGotoDefinition = do
     assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
 
 test_multiFileGotoDefinition :: IO ()
-test_multiFileGotoDefinition = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_multiFileGotoDefinition = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   (fileName2, fileContent2) <- setupAnotherTestFile conn
   runTest $ do
@@ -72,9 +87,8 @@ test_multiFileGotoDefinition = do
     assertEqual (InL [Location uri $ Range (Position 0 0) (Position 0 1)]) definition
 
 test_hovering :: IO ()
-test_hovering = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_hovering = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
@@ -83,9 +97,8 @@ test_hovering = do
 
 -- file changed during session in an open editor
 test_rewriteInEditor :: IO ()
-test_rewriteInEditor = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_rewriteInEditor = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
@@ -94,9 +107,8 @@ test_rewriteInEditor = do
     assertEqual (InL [Location uri $ Range (Position 2 0) (Position 2 1)]) definition
 
 test_multipleRewritesInEditor :: IO ()
-test_multipleRewritesInEditor = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_multipleRewritesInEditor = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
@@ -108,9 +120,8 @@ test_multipleRewritesInEditor = do
 
 -- the file was modified in an earlier session
 test_rewriteRecorded :: IO ()
-test_rewriteRecorded = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_rewriteRecorded = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
   time <- getCurrentTime
@@ -122,9 +133,8 @@ test_rewriteRecorded = do
 
 -- the file was modified during the session while it is closed
 test_rewriteListener :: IO ()
-test_rewriteListener = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_rewriteListener = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
   withTestFile fullFilePath (T.unpack fileContent) $ do
@@ -137,9 +147,8 @@ test_rewriteListener = do
 
 -- the file was modified before the current session
 test_rewriteSaved :: IO ()
-test_rewriteSaved = do 
-  conn <- connectPostgreSQL (BS.pack connectionString)
-  cleanModulesFromDB conn testFilePrefix
+test_rewriteSaved = withTestRepo $ \conn -> do 
+  initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
   withTestFile fullFilePath (unlines ["   x = y", "y = ()"]) $ do
@@ -149,6 +158,8 @@ test_rewriteSaved = do
       doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
       definition <- getDefinitions doc (Position 0 8)
       assertEqual (InL [Location uri $ Range (Position 1 0) (Position 1 1)]) definition
+
+------------------------------------------------------------------------------------------------
 
 setupSimpleTestFile :: Connection -> IO (FilePath, T.Text)
 setupSimpleTestFile conn = do

@@ -20,7 +20,7 @@ import qualified Data.Text as T
 import qualified Data.Map as Map
 import Data.Maybe (isNothing, catMaybes)
 import Data.Time.Clock
-import Database.PostgreSQL.Simple (connectPostgreSQL)
+import Database.PostgreSQL.Simple (connectPostgreSQL, close)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Vector as V
@@ -58,6 +58,12 @@ handlers = mconcat
       cfg <- liftLSP LSP.getConfig
       when (isNothing (cfConnection cfg))
         tryToConnectToDB
+  , requestHandler SShutdown $ \_ responder -> do
+      cfg <- LSP.getConfig
+      case cfConnection cfg of
+        Just conn -> liftIO $ close conn
+        Nothing -> return ()
+      responder $ Right Empty
       
   , requestHandler STextDocumentDefinition $ \req responder -> handlerCtx "STextDocumentDefinition" $ \conn -> do
       let RequestMessage _ _ _ (DefinitionParams (TextDocumentIdentifier uri) pos _ _) = req
