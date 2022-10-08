@@ -41,6 +41,7 @@ packages:
 #
 extra-deps:
   - ../..
+  - ../../../hstools-base
 
 # Override default flag values for local packages and extra-deps
 # flags: {}
