@@ -34,7 +34,8 @@ import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.LspServer.Monad
 import Language.Haskell.HsTools.LspServer.Notifications
 import Language.Haskell.HsTools.LspServer.Utils
-import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.SourceDiffs
+import Language.Haskell.HsTools.SourcePosition as SP
 import Language.Haskell.HsTools.HandleErrors
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.Utils
@@ -100,7 +101,7 @@ handlers = mconcat
                 let ms = HoverContents $ markedUpContent "hstools" $ T.pack
                             $ name ++ (if isDefined == True then " defined here" else "")
                                 ++ (maybe "" ("\n  :: " ++) typ)
-                    origRange = SourceRange (SP startLine startColumn) (SP endLine endColumn)
+                    origRange = SP.Range (SP startLine startColumn) (SP endLine endColumn)
                     newRange = originalToNewRangeStrict rewrites origRange
                     rsp = Hover ms (fmap rangeToLSP newRange)
                 in liftLSP $ responder (Right $ Just rsp)  
@@ -129,7 +130,7 @@ handlers = mconcat
           case compiledSource of
             Just source -> do
               updatedSource <- liftIO $ readFileContent filePath
-              let fileDiffs = maybe Map.empty (sourceDiffs startSP source) updatedSource
+              let fileDiffs = maybe emptyDiffs (createSourceDiffs (SP 1 1) (SP 1 1) source) updatedSource
               liftLSP LSP.getConfig >>= \cf -> liftIO $ replaceSourceDiffs filePath fileDiffs $ cfFileRecords cf
               currentTime <- liftIO getCurrentTime
               let serializedDiff = nothingIfEmpty $ serializeSourceDiffs fileDiffs
@@ -148,7 +149,7 @@ handlers = mconcat
       let NotificationMessage _ _ (DidSaveTextDocumentParams (TextDocumentIdentifier uri) _reason) = msg
       ensureFileLocation uri $ \filePath -> do
         cfg <- LSP.getConfig
-        fileDiffs <- liftIO $ readMVar (cfFileRecords cfg) >>= return . maybe Map.empty frDiffs . Map.lookup filePath
+        fileDiffs <- liftIO $ readMVar (cfFileRecords cfg) >>= return . maybe emptyDiffs frDiffs . Map.lookup filePath
         currentTime <- liftIO getCurrentTime
         let serializedDiff = serializeSourceDiffs fileDiffs
         void $ liftIO $ updateFileDiffs conn filePath currentTime (Just serializedDiff)
@@ -179,7 +180,7 @@ updateFileStatesFor filePath = do
   let status = Map.lookup filePath $ Map.map frDiffs fr
   sendFileStates $ maybe [] ((:[]) . (filePath,)) status
 
-sendFileStates :: [(FilePath, SourceDiffs)] -> LspMonad ()
+sendFileStates :: [(FilePath, SourceDiffs Original Modified)] -> LspMonad ()
 sendFileStates [] = return () 
 sendFileStates states 
   = liftLSP $ sendNotification changeFileStatesMethod $ createChangeFileStates states

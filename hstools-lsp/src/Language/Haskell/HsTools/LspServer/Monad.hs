@@ -10,7 +10,7 @@ import Language.LSP.Types as LSP
 
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
-import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.HandleErrors
 
 data LspContext = LspContext { ctOperation :: String }
@@ -47,11 +47,11 @@ ensureFileLocation location action = case uriToFilePath location of
 
 responseError m = ResponseError InvalidRequest m Nothing
 
-getRewrites :: FilePath -> LspMonad SourceDiffs
+getRewrites :: FilePath -> LspMonad (SourceDiffs Original Modified)
 getRewrites fp = do
   cfg <- liftLSP LSP.getConfig
   fileRecords <- liftIO $ readMVar $ cfFileRecords cfg
-  return $ maybe Map.empty frDiffs $ Map.lookup fp fileRecords
+  return $ maybe emptyDiffs frDiffs $ Map.lookup fp fileRecords
 
 sendMessage :: T.Text -> LspMonad ()
 sendMessage = liftLSP . sendNotification SWindowShowMessage . ShowMessageParams MtInfo

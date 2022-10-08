@@ -4,34 +4,34 @@ module Language.Haskell.HsTools.LspServer.Utils where
 import Control.Concurrent.MVar
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
-import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified Data.Vector as V
 import Database.PostgreSQL.Simple (Connection)
-import Language.LSP.Types as LSP
+import qualified Language.LSP.Types as LSP
 
-import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.FileLines
+import Language.Haskell.HsTools.SourceDiffs
+import Language.Haskell.HsTools.SourcePosition
 
-textDocChangeToSD :: LSP.TextDocumentContentChangeEvent -> Maybe SourceRewrite
+textDocChangeToSD :: LSP.TextDocumentContentChangeEvent -> Maybe (Rewrite orig)
 textDocChangeToSD (LSP.TextDocumentContentChangeEvent (Just (LSP.Range start end)) _ text)
-  = Just $ SourceRewrite st (posToSP end) (T.unpack text)
-  where st = posToSP start
+  = Just $ Rewrite (Range (posToSP start) (posToSP end)) (T.unpack text)
 textDocChangeToSD _ = Nothing
 
-posToSP :: LSP.Position -> SP
+posToSP :: LSP.Position -> SP orig
 posToSP (LSP.Position line char) = SP (fromIntegral line + 1) (fromIntegral char + 1)
 
-spToPos :: SP -> LSP.Position
+spToPos :: SP orig -> LSP.Position
 spToPos (SP line char) = LSP.Position (fromIntegral line - 1) (fromIntegral char - 1)
 
-rangeToLSP :: SourceRange -> LSP.Range
-rangeToLSP (SourceRange start end) = LSP.Range (spToPos start) (spToPos end)
+rangeToLSP :: Range orig -> LSP.Range
+rangeToLSP (Range start end) = LSP.Range (spToPos start) (spToPos end)
 
-lineToLoc :: SourceDiffs -> (String, Int, Int, Int, Int) -> Maybe LSP.Location
+lineToLoc :: SourceDiffs orig mod -> (String, Int, Int, Int, Int) -> Maybe LSP.Location
 lineToLoc rewrites (file, startLine, startCol, endLine, endCol)
-  = fmap (LSP.Location (filePathToUri file) . rangeToLSP) 
+  = fmap (LSP.Location (LSP.filePathToUri file) . rangeToLSP) 
       $ originalToNewRangeStrict rewrites 
-      $ SourceRange (SP startLine startCol) (SP endLine endCol)
+      $ Range (SP startLine startCol) (SP endLine endCol)
 
 nothingIfEmpty :: String -> Maybe String
 nothingIfEmpty "" = Nothing
@@ -40,14 +40,14 @@ nothingIfEmpty str = Just str
 instance Show Connection where
   show _ = "<Connection>"
 
-createChangeFileStates :: [(FilePath, SourceDiffs)] -> A.Value
+createChangeFileStates :: [(FilePath, SourceDiffs orig mod)] -> A.Value
 createChangeFileStates states = A.Object $ A.fromList [ ("result", payload )]
   where
     payload = A.Array $ V.fromList $ map diffToStates states
     diffToStates (fp, diff) = A.Object $ A.fromList [("filePath", A.String $ T.pack fp), ("state", toState diff)]
-    toState diff = A.String $ if Map.null diff then "fresh" else "edited"
+    toState diff = A.String $ if isEmptyDiffs diff then "fresh" else "edited"
 
-changeFileStatesMethod = SCustomMethod "ChangeFileStates"
+changeFileStatesMethod = LSP.SCustomMethod "ChangeFileStates"
 
 modifyMVarPure :: (a -> a) -> MVar a -> IO ()
 modifyMVarPure f mv = modifyMVar_ mv (return . f)

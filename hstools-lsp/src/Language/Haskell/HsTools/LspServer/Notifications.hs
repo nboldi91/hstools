@@ -12,7 +12,7 @@ import Language.LSP.Types as LSP
 
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.LspServer.FileRecords
-import Language.Haskell.HsTools.LinesDiff
+import Language.Haskell.HsTools.SourceDiffs
 
 -- Listens to the compile process changing the DB when the source is recompiled
 handleNotifications :: Connection -> FileRecords -> (FromServerMessage -> IO ()) -> IO ()
@@ -30,7 +30,7 @@ updateFileStatesIO filePath fileRecords messageHandler = do
   sendFileStatesIO (maybe [] ((:[]) . (filePath,)) status) messageHandler
 
 -- | Does the same as 
-sendFileStatesIO :: [(FilePath, SourceDiffs)] -> (FromServerMessage -> IO ()) -> IO ()
+sendFileStatesIO :: [(FilePath, SourceDiffs Original Modified)] -> (FromServerMessage -> IO ()) -> IO ()
 sendFileStatesIO [] _ = return () 
 sendFileStatesIO states messageHandler
   = messageHandler $ FromServerMess changeFileStatesMethod 
