@@ -45,3 +45,17 @@ library:
   ghc-options:
     - -W
     - -Werror
+
+tests:
+  hstools-plugin-tests:
+    main: AllTests.hs
+    source-dirs: tests
+    ghc-options:
+    - -threaded
+    dependencies:
+    - hstools
+    - hstools-base
+    - HUnit
+    - HTF
+    - ghc
+    - ghc-paths

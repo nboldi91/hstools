@@ -46,7 +46,7 @@ library:
     - -Werror
 
 tests:
-  hstools-lsp-tests:
+  hstools-base-tests:
     main: AllTests.hs
     source-dirs: tests
     ghc-options:

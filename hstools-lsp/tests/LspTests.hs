@@ -56,19 +56,10 @@ connectionDBName = "lsptestrepo"
 serverConfig :: A.Value
 serverConfig = A.Object (A.singleton "hstools" $ A.Object (A.singleton "postgresqlConnectionString" $ A.String (T.pack connectionString)))
 
-withTestRepo :: (Connection -> IO ()) -> IO ()
-withTestRepo test = do 
-  conn <- connectPostgreSQL (BS.pack $ connectionStringWithoutDB ++ "/postgres")
-  createAndRun conn `finally` (execute_ conn (fromString $ "DROP DATABASE IF EXISTS " ++ connectionDBName))
-  where
-    createAndRun conn = void $ do
-      execute_ conn (fromString $ "CREATE DATABASE " ++ connectionDBName) 
-      testConn <- connectPostgreSQL (BS.pack connectionString)
-      test testConn
-      close testConn
+useTestRepo = withTestRepo connectionStringWithoutDB connectionDBName
 
 test_simpleGotoDefinition :: IO ()
-test_simpleGotoDefinition = withTestRepo $ \conn -> do
+test_simpleGotoDefinition = useTestRepo $ \conn -> do
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
@@ -77,7 +68,7 @@ test_simpleGotoDefinition = withTestRepo $ \conn -> do
     assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
 test_multiFileGotoDefinition :: IO ()
-test_multiFileGotoDefinition = withTestRepo $ \conn -> do 
+test_multiFileGotoDefinition = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   (fileName2, fileContent2) <- setupAnotherTestFile conn
@@ -88,7 +79,7 @@ test_multiFileGotoDefinition = withTestRepo $ \conn -> do
     assertEqual (InL [Location uri $ LSP.Range (Position 0 0) (Position 0 1)]) definition
 
 test_hovering :: IO ()
-test_hovering = withTestRepo $ \conn -> do 
+test_hovering = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
@@ -98,7 +89,7 @@ test_hovering = withTestRepo $ \conn -> do
 
 -- file changed during session in an open editor
 test_rewriteInEditor :: IO ()
-test_rewriteInEditor = withTestRepo $ \conn -> do 
+test_rewriteInEditor = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
@@ -108,7 +99,7 @@ test_rewriteInEditor = withTestRepo $ \conn -> do
     assertEqual (InL [Location uri $ LSP.Range (Position 2 0) (Position 2 1)]) definition
 
 test_multipleRewritesInEditor :: IO ()
-test_multipleRewritesInEditor = withTestRepo $ \conn -> do 
+test_multipleRewritesInEditor = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
@@ -121,7 +112,7 @@ test_multipleRewritesInEditor = withTestRepo $ \conn -> do
 
 -- the file was modified in an earlier session
 test_rewriteRecorded :: IO ()
-test_rewriteRecorded = withTestRepo $ \conn -> do 
+test_rewriteRecorded = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
@@ -134,7 +125,7 @@ test_rewriteRecorded = withTestRepo $ \conn -> do
 
 -- the file was modified during the session while it is closed
 test_rewriteListener :: IO ()
-test_rewriteListener = withTestRepo $ \conn -> do 
+test_rewriteListener = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
@@ -148,7 +139,7 @@ test_rewriteListener = withTestRepo $ \conn -> do
 
 -- the file was modified before the current session
 test_rewriteSaved :: IO ()
-test_rewriteSaved = withTestRepo $ \conn -> do 
+test_rewriteSaved = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath

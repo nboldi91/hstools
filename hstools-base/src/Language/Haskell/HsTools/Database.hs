@@ -59,7 +59,10 @@ insertModule conn fullPath roundedModificationTime moduleName unitId content
       (fullPath, roundedModificationTime, moduleName, unitId, content)
 
 getAstNodes :: Connection -> Int -> IO [(Int, Int, Int, Int, Int)]
-getAstNodes conn moduleId = query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
+getAstNodes conn moduleId = query conn "SELECT FROM ast AS n JOIN names nn ON nn.astNode = n.astId, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
+
+getAllNames :: Connection -> IO [(Int, Int, String, Bool)]
+getAllNames conn = query_ conn "SELECT startRow, startColumn, name, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId ORDER BY startRow, startColumn"
 
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
