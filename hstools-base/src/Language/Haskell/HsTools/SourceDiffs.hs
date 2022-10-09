@@ -1,6 +1,5 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
 module Language.Haskell.HsTools.SourceDiffs
   ( SourceDiffs, emptyDiffs, isEmptyDiffs, addExtraChange, createSourceDiffs
@@ -104,25 +103,19 @@ mkSourceDiffs diffs
 
 -- to get the best possible results we re-diff the part of the source code that is affected by the change
 -- extending to encompass all existing changes around it
-addExtraChange :: forall orig mod . FileLines -> Rewrite mod -> (FileLines, SourceDiffs orig mod) -> (FileLines, SourceDiffs orig mod)
+addExtraChange :: FileLines -> Rewrite mod -> (FileLines, SourceDiffs orig mod) -> (FileLines, SourceDiffs orig mod)
 addExtraChange compiledContent rewrite@(Rewrite modRange replacement) (actualContent, diffs) = (newContent, newDiffs)
   where
     newDiffs
       = if isEmptyDiffs affectedDiffs
-          then unionDiffs (adjustDiff modRange newRange diffs) (singletonDiffs origRange newRange)
-          else unionDiffs adjustedUnaffectedDiffs reDiffs 
-    adjustedUnaffectedDiffs :: SourceDiffs orig mod
-    adjustedUnaffectedDiffs
+          then adjustDiff modRange newRange diffs `unionDiffs` singletonDiffs origRange newRange
+          else beforeDiffs `unionDiffs` adjustedAfterDiffs `unionDiffs` reDiffs 
+    adjustedAfterDiffs
       = maybe id (\(SrcDiff from to) -> adjustDiff from to) lastReDiff
-        $ m1
-    
-    m1 :: SourceDiffs orig mod
-    m1 = adjustDiff lastAffectedDiffTo lastAffectedDiffFrom unaffectedDiffs
-
+        $ adjustDiff lastAffectedDiffTo lastAffectedDiffFrom afterDiffs
     lastReDiff = fmap (castSrcDiff . fst) $ Map.maxView $ modKeyedMap reDiffs
-    
-    
-    SrcDiff lastAffectedDiffFrom lastAffectedDiffTo = castSrcDiff $ fst $ fromMaybe (error "addExtraChange: lastAffectedDiff is empty") $ Map.maxView $ modKeyedMap affectedDiffs
+    SrcDiff lastAffectedDiffFrom lastAffectedDiffTo
+      = castSrcDiff $ fst $ fromMaybe (error "addExtraChange: lastAffectedDiff is empty") $ Map.maxView $ modKeyedMap affectedDiffs
     reDiffs = createSourceDiffs
                 (srStart origRangeToReDiff)
                 (srStart newestRangeToReDiff)
@@ -131,24 +124,20 @@ addExtraChange compiledContent rewrite@(Rewrite modRange replacement) (actualCon
     newContent = applySourceDiff rewrite actualContent
     newestRangeToReDiff = originalToNewRange rewriteDiff $ originalToNewRange diffs origRangeToReDiff
     origRangeToReDiff = concatRanges $ origRange : map sdFrom (Map.elems $ modKeyedMap affectedDiffs)
-    (affectedDiffs, unaffectedDiffs) = touchingChanges diffs modRange
+    (beforeDiffs, affectedDiffs, afterDiffs) = touchingChanges diffs modRange
     rewriteDiff = singletonDiffs modRange newRange
     newRange = Range (srStart modRange) (spAdvanceStr (srStart modRange) replacement) 
     origRange = newToOriginalRange diffs modRange
 
--- TODO: break into 3 parts: before, touching, after
-
-touchingChanges :: SourceDiffs orig mod -> Range mod -> (SourceDiffs orig mod, SourceDiffs orig mod)
+touchingChanges :: SourceDiffs orig mod -> Range mod -> (SourceDiffs orig mod, SourceDiffs orig mod, SourceDiffs orig mod)
 touchingChanges diffs (Range start end)
-  = (touching, before `unionDiffs` after)
+  = (before, touching, after)
   where 
     (before, touching) = case firstNotTouching of
       Just fnt -> breakDiff (srStart $ sdTo fnt) notAfter
       Nothing -> (emptyDiffs, notAfter)
     firstNotTouching = listToMaybe $ dropWhile ((start <=) . srEnd . sdTo) $ map snd $ Map.toDescList $ modKeyedMap notAfter
     (notAfter, after) = breakDiff end diffs
-
--- TODO: use newest domain for adjustdiff, support cast between domain without evaluation
 
 adjustDiff :: Range mod -> Range mod -> SourceDiffs orig mod -> SourceDiffs orig mod
 adjustDiff mod@(Range _ modEnd) replaced (SourceDiffs {..})

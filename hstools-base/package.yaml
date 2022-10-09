@@ -44,3 +44,15 @@ library:
   ghc-options:
     - -W
     - -Werror
+
+tests:
+  hstools-lsp-tests:
+    main: AllTests.hs
+    source-dirs: tests
+    ghc-options:
+    - -threaded
+    dependencies:
+    - hstools-base
+    - containers
+    - HUnit
+    - HTF
