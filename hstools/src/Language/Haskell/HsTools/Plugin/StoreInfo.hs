@@ -21,6 +21,7 @@ import Control.Monad.Writer
 import Control.Monad.Reader
 import qualified Data.Map as M
 import Data.Maybe
+import Data.List
 import Database.PostgreSQL.Simple (Connection)
 
 import HsDecls
@@ -34,6 +35,8 @@ import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Plugin.Class
 import Language.Haskell.HsTools.Database
 
+-- import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
+
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
     astNodes <- getAstNodes conn moduleId
@@ -41,6 +44,7 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
                                           -> (NodePos startRow startColumn endRow endColumn, astId)) 
                                       astNodes
     context <- defaultStoreContext conn moduleId moduleName
+    -- liftIO $ putStrLn $ "storeTypes: " ++ show (tcg_binds env)
     ((), types) <- runWriterT (runReaderT storeEnv context{ scNodeMap = astNodeMap })
     when isVerbose $ do
       putStrLn "### Storing types:"
@@ -67,10 +71,11 @@ storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
     context <- defaultStoreContext conn moduleId moduleName
     ((), names) <- runWriterT (runReaderT (store gr) context)
+    let uniqueNames = nub $ sort names
     when isVerbose $ do
       putStrLn "### Storing names:"
-      mapM_ print names
-    persistNames conn moduleId names
+      mapM_ print uniqueNames
+    persistNames conn moduleId uniqueNames
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do

@@ -31,7 +31,7 @@ withTestFile :: FilePath -> String -> IO () -> IO ()
 withTestFile fileName content action = (writeFileSafe fileName content >> action) `finally` removeFile fileName
 
 withTestFileLines :: FilePath -> [String] -> IO () -> IO ()
-withTestFileLines fileName content action = (writeFileSafe fileName (unlines content) >> action) `finally` removeFile fileName
+withTestFileLines fileName content action = (writeFileSafe fileName (concatMap (++ "\n") content) >> action) `finally` removeFile fileName
 
 writeFileSafe :: FilePath -> String -> IO ()
 writeFileSafe filePath content = do

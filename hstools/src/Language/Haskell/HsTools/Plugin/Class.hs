@@ -13,6 +13,7 @@ import qualified Data.Map as M
 
 import Bag
 import BooleanFormula
+import ConLike
 import HsBinds
 import HsDecls
 import HsExpr
@@ -33,6 +34,7 @@ import Language.Haskell.HsTools.Plugin.Types
 
 type IsGhcPass p r =
   ( HaskellAst Name r -- skip
+  , HaskellAst Id r -- skip
   , HaskellAst (IdP (GhcPass p)) r
   , HaskellAst (XExprWithTySig (GhcPass p)) r
   , HaskellAst (XSigPat (GhcPass p)) r
@@ -65,6 +67,9 @@ instance HaskellAst Name NameRecord where
         _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
 
 instance HaskellAst Name TypeRecord where
+  store _ = return ()
+
+instance HaskellAst Id NameRecord where
   store _ = return ()
 
 instance HaskellAst Id TypeRecord where
@@ -126,12 +131,11 @@ instance HaskellAst Type r where
   store _ = return ()
 
 instance HaskellAst a r => HaskellAst (Located a) r where
-  store (L span ast)
-    = do thSpan <- case srcSpanToNodePos span of
-                    Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
-                    Nothing -> return False
-         when (not thSpan) $
-          (if isGoodSrcSpan span then withSpan span else id) $ store ast
+  store (L span ast) = do
+    thSpan <- case srcSpanToNodePos span of
+                Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
+                Nothing -> return False
+    when (not thSpan) $ (if isGoodSrcSpan span then withSpan span else id) $ store ast
 
 instance HaskellAst a r => HaskellAst [a] r where
     store = mapM_ store
@@ -202,7 +206,7 @@ instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
     store (XTyVarBndr _) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
-    store (FunBind _ _ matches _ _) = store matches -- id will be in matches as well     
+    store (FunBind _ funId matches _ _) = defining (store funId) >> store matches
     store (PatBind _ lhs rhs _) = store lhs >> store rhs
     store (VarBind _ id rhs _) = do
       isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
@@ -243,7 +247,7 @@ instance IsGhcPass p r => HaskellAst (HsLocalBinds (GhcPass p)) r where
 instance IsGhcPass p r => HaskellAst (HsExpr (GhcPass p)) r where 
     store (HsVar _ id) = store id
     store (HsUnboundVar {}) = return () -- hole or naming error
-    store (HsConLikeOut {}) = return () -- only after type checking
+    store (HsConLikeOut _ conLike) = store conLike
     store (HsRecFld _ selector) = store selector
     store (HsOverLabel {}) = return () -- rebindable syntax
     store (HsIPVar {}) = return () -- implicit parameter
@@ -567,3 +571,6 @@ instance IsGhcPass p r => HaskellAst (ApplicativeArg (GhcPass p)) r where
 instance IsGhcPass p r => HaskellAst (TyClGroup (GhcPass p)) r where
     store (TyClGroup _ tyclds roles insts) = store tyclds >> store roles >> store insts
     store (XTyClGroup {}) = return ()
+
+instance HaskellAst Id r => HaskellAst ConLike r where
+  store = store . conLikeWrapId_maybe

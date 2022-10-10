@@ -12,7 +12,7 @@ data NameRecord = NameRecord
   , nmNamespace :: Maybe Namespace
   , nmIsDefined :: Bool
   , nmPos :: NodePos
-  } deriving Show
+  } deriving (Show, Eq, Ord)
 
 data NodePos = NodePos
   { npStartRow :: Int
@@ -24,7 +24,7 @@ data NodePos = NodePos
 data TypeRecord = TypeRecord
   { trAstNode :: Int
   , trType :: String
-  } deriving Show
+  } deriving (Show, Eq, Ord)
 
 data NameAndTypeRecord = NameAndTypeRecord
   { ntrName :: String
@@ -32,7 +32,7 @@ data NameAndTypeRecord = NameAndTypeRecord
   , ntrIsDefined :: Bool
   , ntrType :: Maybe String
   , ntrPos :: NodePos
-  } deriving Show
+  } deriving (Show, Eq, Ord)
 
 -- TODO: look up by the name first and then by the location
 

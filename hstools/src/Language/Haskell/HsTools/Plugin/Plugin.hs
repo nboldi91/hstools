@@ -72,10 +72,11 @@ cleanAndRecordModule conn ms = do
 
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
-    withDB clOpts $ \conn -> do
-        reinitializeTablesIfNeeded conn
-        cleanAndRecordModule conn ms
-    return mod
+  when (isVerbose clOpts) $ putStrLn $ "Starting stage: parsedAction"
+  withDB clOpts $ \conn -> do
+    reinitializeTablesIfNeeded conn
+    cleanAndRecordModule conn ms
+  return mod
 
 renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction clOpts env group = do
@@ -94,6 +95,7 @@ spliceAction clOpts expr = do
   
 runStage :: [CommandLineOption] -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> TcM ()
 runStage clOpts caption condition newStage action = withDB clOpts $ \conn -> do
+  when (isVerbose clOpts) $ liftIO $ putStrLn $ "Starting stage: " ++ caption
   env <- getEnv
   let mod = tcg_mod $ env_gbl env
       modName = moduleNameString $ moduleName mod

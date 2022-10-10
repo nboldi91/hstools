@@ -15,7 +15,7 @@ import Database.PostgreSQL.Simple
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
 
-data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum)
+data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum, Eq, Ord)
 
 getCompiledTime :: Connection -> FilePath -> IO (Maybe UTCTime)
 getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only filePath)
@@ -59,10 +59,10 @@ insertModule conn fullPath roundedModificationTime moduleName unitId content
       (fullPath, roundedModificationTime, moduleName, unitId, content)
 
 getAstNodes :: Connection -> Int -> IO [(Int, Int, Int, Int, Int)]
-getAstNodes conn moduleId = query conn "SELECT FROM ast AS n JOIN names nn ON nn.astNode = n.astId, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
+getAstNodes conn moduleId = query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
 
-getAllNames :: Connection -> IO [(Int, Int, String, Bool)]
-getAllNames conn = query_ conn "SELECT startRow, startColumn, name, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId ORDER BY startRow, startColumn"
+getAllNames :: Connection -> IO [(Int, Int, String, Maybe String, Bool)]
+getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId LEFT JOIN types tt ON tt.astNode = n.astId ORDER BY startRow, startColumn"
 
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
@@ -127,6 +127,9 @@ getHoverInfo conn file row col =
 logErrorMessage :: Connection -> UTCTime -> String -> String -> IO ()
 logErrorMessage conn time context message
   = void $ execute conn "INSERT INTO errorLogs (time, context, message) VALUES (?, ?, ?)" (time, context, message)
+
+getErrors :: Connection -> IO [(String, String)]
+getErrors conn = query_ conn "SELECT context, message FROM errorLogs"
 
 listenToModuleClean :: Connection -> IO ()
 listenToModuleClean conn = void $ execute_ conn "LISTEN module_clean"
