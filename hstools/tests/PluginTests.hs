@@ -102,6 +102,15 @@ test_classDef = useTestRepo $ \conn -> do
   gsubAssert $ assertHasNameNoType names (2, 22, Local "X.a", Use) -- TODO: kind should be *
   gsubAssert $ assertHasNameNoType names (2, 27, Local "X.a", Use) -- TODO: kind should be *
 
+test_instanceDef :: Assertion
+test_instanceDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "data X = X", "instance Show X where", "  show X = \"x\""] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasNameNoType names (3, 10, Global "GHC.Show.Show", Use) -- TODO: kind should be "* -> Constraint"
+  gsubAssert $ assertHasName names (3, 15, Global "X.X", "*", Use)
+  gsubAssert $ assertHasNameNoType names (4, 3, Global "GHC.Show.show", Use) -- TODO: kind should be "X -> String"
+  gsubAssert $ assertHasName names (4, 8, Global "X.X", "X", Use)
+
 test_typeDef :: Assertion
 test_typeDef = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "type MyString = String"] (runGhcTest conn)
