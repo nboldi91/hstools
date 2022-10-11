@@ -4,7 +4,6 @@ module Language.Haskell.HsTools.Plugin.Monad where
 
 import Control.Monad.Reader
 import Control.Monad.Writer
-import qualified Data.Map as M
 import Database.PostgreSQL.Simple (Connection)
 
 import SrcLoc
@@ -18,7 +17,6 @@ data StoreContext = StoreContext
   { scModuleName :: String
   , scSpan :: SrcSpan
   , scDefining :: Bool
-  , scNodeMap :: M.Map NodePos Int -- used to associate types with locations
   , scDefinition :: DefinitionContext
   , scThSpans :: [NodePos]
   }
@@ -42,7 +40,6 @@ defaultStoreContext conn moduleId moduleName = do
     { scModuleName = moduleName
     , scSpan = noSrcSpan
     , scDefining = False
-    , scNodeMap = M.empty
     , scDefinition = Root
     , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
     }

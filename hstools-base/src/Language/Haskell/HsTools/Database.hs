@@ -62,7 +62,7 @@ getAstNodes :: Connection -> Int -> IO [(Int, Int, Int, Int, Int)]
 getAstNodes conn moduleId = query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
 
 getAllNames :: Connection -> IO [(Int, Int, String, Maybe String, Bool)]
-getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId LEFT JOIN types tt ON tt.astNode = n.astId ORDER BY startRow, startColumn"
+getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId LEFT JOIN types tt ON tt.typedName = nn.name AND tt.typeNamespace = nn.namespace ORDER BY startRow, startColumn"
 
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
@@ -70,8 +70,8 @@ persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, st
 persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool)] -> IO ()
 persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)" names
 
-persistTypes :: Connection -> [(Int, Int, String)] -> IO ()
-persistTypes conn types = void $ executeMany conn "INSERT INTO types (module, astNode, type) VALUES (?, ?, ?)" types
+persistTypes :: Connection -> [(String, Maybe Int, String)] -> IO ()
+persistTypes conn types = void $ executeMany conn "INSERT INTO types (typedName, typeNamespace, type) VALUES (?, ?, ?)" types
 
 persistTHRange' :: Connection -> Int -> Int -> IO ()
 persistTHRange' conn mod astNode = void $ execute conn "INSERT INTO thRanges (module, astNode) VALUES (?, ?)" (mod, astNode)
@@ -119,7 +119,7 @@ getHoverInfo conn file row col =
         FROM ast n
         JOIN names nn ON nn.astNode = n.astId
         JOIN modules nm ON n.module = nm.moduleId
-        LEFT JOIN types tn ON n.astId = tn.astNode
+        LEFT JOIN types tn ON nn.name = tn.typedName AND nn.namespace = tn.typeNamespace
         WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?
     |]
     (file, row, row, col, col)
@@ -147,10 +147,10 @@ cleanModulesFromDB conn filePath = do
 cleanRelatedData :: Connection -> Int -> IO ()
 cleanRelatedData conn moduleId = void $ do
   execute conn "DELETE FROM names WHERE module = ?" [moduleId]
-  execute conn "DELETE FROM types WHERE module = ?" [moduleId]
   execute conn "DELETE FROM thRanges WHERE module = ?" [moduleId]
   execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
   execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
+  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typeNamespace = namespace)"
 
 reinitializeTablesIfNeeded :: Connection -> IO ()
 reinitializeTablesIfNeeded conn = do
@@ -168,7 +168,7 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 2
+databaseSchemaVersion = 3
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -214,9 +214,8 @@ databaseSchema = [sql|
     );
 
   CREATE TABLE types 
-    ( module INT NOT NULL
-    , astNode INT NOT NULL
-    , CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    ( typedName TEXT NOT NULL
+    , typeNamespace INT
     , type TEXT NOT NULL
     );
 

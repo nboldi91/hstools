@@ -22,7 +22,8 @@ data NodePos = NodePos
   } deriving (Eq, Ord)
 
 data TypeRecord = TypeRecord
-  { trAstNode :: Int
+  { trTypedName :: String
+  , trTypeNamespace :: Maybe Namespace
   , trType :: String
   } deriving (Show, Eq, Ord)
 
@@ -33,8 +34,6 @@ data NameAndTypeRecord = NameAndTypeRecord
   , ntrType :: Maybe String
   , ntrPos :: NodePos
   } deriving (Show, Eq, Ord)
-
--- TODO: look up by the name first and then by the location
 
 data StoreParams = StoreParams
   { spIsVerbose :: Bool

@@ -162,7 +162,7 @@ setupSimpleTestFile conn = do
   mi <- insertModule conn fullFilePath time "X" "test" content
   asts <- persistAst conn [(mi, 1, 1, 1, 2), (mi, 1, 5, 1, 6), (mi, 2, 1, 2, 2)]
   persistName conn [(mi, asts !! 0, "x", vnms, True), (mi, asts !! 1, "y", vnms, False), (mi, asts !! 2, "y", vnms, True)]
-  persistTypes conn [(mi, asts !! 0, "()"), (mi, asts !! 1, "()"), (mi, asts !! 2, "()")]
+  persistTypes conn [("x", vnms, "()"), ("y", vnms, "()")]
   return (fileName, T.pack content)
 
 setupAnotherTestFile :: Connection -> IO (FilePath, T.Text)
@@ -174,7 +174,7 @@ setupAnotherTestFile conn = do
   mi <- insertModule conn fullFilePath time "X" "test" content
   asts <- persistAst conn [(mi, 2, 1, 2, 2), (mi, 2, 5, 2, 6)]
   persistName conn [(mi, asts !! 0, "z", vnms, True), (mi, asts !! 1, "x", vnms, False)]
-  persistTypes conn [(mi, asts !! 0, "()"), (mi, asts !! 1, "()")]
+  persistTypes conn [("x", vnms, "()"), ("z", vnms, "()")]
   return (fileName, T.pack content)
 
 -- value namespace

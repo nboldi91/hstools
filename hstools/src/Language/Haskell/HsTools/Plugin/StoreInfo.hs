@@ -19,16 +19,22 @@ module Language.Haskell.HsTools.Plugin.StoreInfo where
 
 import Control.Monad.Writer
 import Control.Monad.Reader
-import qualified Data.Map as M
+-- import qualified Data.Map as M
+-- import qualified Data.IntMap as IM
 import Data.Maybe
 import Data.List
 import Database.PostgreSQL.Simple (Connection)
 
 import HsDecls
+-- import HscTypes
 import HsExpr
 import HsExtension
 import SrcLoc
 import TcRnTypes
+import UniqFM
+-- import Unique
+
+-- import Outputable
 
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
@@ -39,33 +45,21 @@ import Language.Haskell.HsTools.Database
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    astNodes <- getAstNodes conn moduleId
-    let astNodeMap = M.fromList $ map (\(startRow, startColumn, endRow, endColumn, astId) 
-                                          -> (NodePos startRow startColumn endRow endColumn, astId)) 
-                                      astNodes
+    -- TODO: get all names from env and filter by that
     context <- defaultStoreContext conn moduleId moduleName
-    -- liftIO $ putStrLn $ "storeTypes: " ++ show (tcg_binds env)
-    ((), types) <- runWriterT (runReaderT storeEnv context{ scNodeMap = astNodeMap })
+    -- putStrLn $ "tcg_type_env: " ++ (showSDocUnsafe $ ppr $ tcg_type_env env)
+    let storeEnv = do
+          -- TODO: finish storing types
+          store $ tcg_binds env
+          store $ eltsUFM $ tcg_type_env env
+    ((), types) <- runWriterT (runReaderT storeEnv context)
+    let uniqueTypes = nub $ sort types
     when isVerbose $ do
       putStrLn "### Storing types:"
-      mapM_ print types
-    persistTypes conn (map convertType types)
+      mapM_ print uniqueTypes
+    persistTypes conn (map convertType uniqueTypes)
   where
-    convertType (TypeRecord astNode typ) = (moduleId, astNode, typ)
-    storeEnv = do
-      -- TODO: finish storing types
-      store (tcg_binds env)
-      --store (tcg_sigs env)
-      --store (tcg_imp_specs env)
-      --store (tcg_warns env)
-      --store (tcg_anns env)
-      --store (tcg_tcs env)
-      --store (tcg_insts env)
-      --store (tcg_fam_insts env)
-      --store (tcg_rules env)
-      --store (tcg_fords env)
-      --store (tcg_patsyns env)
-      --store (tcg_doc_hdr env)
+    convertType (TypeRecord name namespace typ) = (name, fmap fromEnum namespace, typ)
 
 storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
@@ -100,10 +94,10 @@ persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
 persistNamesAndTypes conn moduleId namesAndTypes = do
     astIds <- persistAst conn (map convertLocation namesAndTypes)
     persistName conn (map convertName (namesAndTypes `zip` astIds))
-    persistTypes conn (catMaybes $ map convertType (namesAndTypes `zip` astIds))
+    persistTypes conn (catMaybes $ map convertType namesAndTypes)
   where
     convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
-    convertType (NameAndTypeRecord { ntrType }, id) = fmap (moduleId, id :: Int,) ntrType
+    convertType (NameAndTypeRecord { ntrName, ntrNamespace, ntrType }) = fmap (ntrName, fmap fromEnum ntrNamespace, ) ntrType
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
