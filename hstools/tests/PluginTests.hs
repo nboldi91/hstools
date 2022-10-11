@@ -23,8 +23,6 @@ import Language.Haskell.HsTools.Database
 
 import Language.Haskell.HsTools.Plugin ()
 
-import Debug.Trace
-
 test_empty :: Assertion
 test_empty = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where"] (runGhcTest conn)
@@ -135,6 +133,13 @@ test_closedTypeFamily = useTestRepo $ \conn -> do
   gsubAssert $ assertHasNameNoType names (4, 7, Global "GHC.Types.True", Use) -- TODO: type should be Bool
 
 
+test_multipleModules :: Assertion
+test_multipleModules = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "import Y", "x = y"] $ withTestFileLines "Y.hs" ["module Y where", "y = ()"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (3, 1, Global "X.x", "()", Definition)
+  gsubAssert $ assertHasName names (3, 5, Global "Y.y", "()", Use)
+  gsubAssert $ assertHasName names (2, 1, Global "Y.y", "()", Definition)
 
 test_reStore :: Assertion
 test_reStore = useTestRepo $ \conn -> do
@@ -174,7 +179,7 @@ runGhcTest conn = do
   assertEqual [] errors
   assertEqual True (succeeded res)
 
-testFile = "x.hs"
+testFile = "X.hs"
 
 dynFlagsForTest = do
   flags <- getSessionDynFlags
