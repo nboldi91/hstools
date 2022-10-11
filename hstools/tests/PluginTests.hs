@@ -38,6 +38,17 @@ test_oneDef = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (2, 1, Global "X.x", "()", Definition)
   gsubAssert $ assertHasName names (2, 5, Global "GHC.Tuple.()", "()", Use)
 
+test_polyDef :: Assertion
+test_polyDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "x :: Num a => a -> a -> a", "x = (+)"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 1, Global "X.x", "forall a. Num a => a -> a -> a", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 6, Global "GHC.Num.Num", Use) -- TODO: kind should be "* -> * -> Constraint"
+  gsubAssert $ assertHasNameNoType names (2, 10, Local "X.a", Use) -- TODO: kind should be "* -> * -> Constraint"
+  gsubAssert $ assertHasNameNoType names (2, 15, Local "X.a", Use) -- TODO: kind should be "* -> * -> Constraint"
+  gsubAssert $ assertHasName names (3, 1, Global "X.x", "forall a. Num a => a -> a -> a", Definition)
+  gsubAssert $ assertHasName names (3, 5, Global "GHC.Num.+", "forall a. Num a => a -> a -> a", Use)
+
 test_localDef :: Assertion
 test_localDef = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "x = y where y = ()"] (runGhcTest conn)
@@ -47,12 +58,20 @@ test_localDef = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (2, 13, Local "X.y", "()", Definition)
   gsubAssert $ assertHasName names (2, 17, Global "GHC.Tuple.()", "()", Use)
 
+test_localLetDef :: Assertion
+test_localLetDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "x = let y = 3 in y"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 1, Global "X.x", "Integer", Definition)
+  gsubAssert $ assertHasName names (2, 9, Local "X.y", "Integer", Definition)
+  gsubAssert $ assertHasName names (2, 18, Local "X.y", "Integer", Use)
+
 test_oneDefWithTypeSig :: Assertion
 test_oneDefWithTypeSig = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "x :: ()", "x = ()"] (runGhcTest conn)
   names <- getAllNames conn
   gsubAssert $ assertHasName names (2, 1, Global "X.x", "()", Definition)
-  -- gsubAssert $ assertHasName names (2, 6, "()", Just "*", Use)
+  -- gsubAssert $ assertHasName names (2, 6, "()", "*", Use) -- TODO
   gsubAssert $ assertHasName names (3, 1, Global "X.x", "()", Definition)
   gsubAssert $ assertHasName names (3, 5, Global "GHC.Tuple.()", "()", Use)
 
@@ -62,7 +81,34 @@ test_dataDef = useTestRepo $ \conn -> do
   names <- getAllNames conn
   gsubAssert $ assertHasName names (2, 6, Global "X.X", "*", Definition)
   gsubAssert $ assertHasName names (2, 10, Global "X.Y", "() -> X", Definition)
-  -- gsubAssert $ assertHasName names (2, 12, Global "()", "*", Use)
+  -- gsubAssert $ assertHasName names (2, 12, Global "()", "*", Use) -- TODO
+
+test_newTypeDef :: Assertion
+test_newTypeDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "newtype X a = X a"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 9, Global "X.X", "* -> *", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 11, Local "X.a", Definition) -- TODO: kind should be *
+  gsubAssert $ assertHasName names (2, 15, Global "X.X", "forall a. a -> X a", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 17, Local "X.a", Use) -- TODO: kind should be *
+
+test_classDef :: Assertion
+test_classDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "class C a where c :: a -> a"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 7, Global "X.C", "* -> Constraint", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 9, Local "X.a", Definition) -- TODO: kind should be *
+  gsubAssert $ assertHasName names (2, 17, Global "X.c", "forall a. C a => a -> a", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 22, Local "X.a", Use) -- TODO: kind should be *
+  gsubAssert $ assertHasNameNoType names (2, 27, Local "X.a", Use) -- TODO: kind should be *
+
+test_typeDef :: Assertion
+test_typeDef = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "type MyString = String"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 6, Global "X.MyString", "*", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 17, Global "GHC.Base.String", Use) -- TODO: kind should be *
+
 
 
 
@@ -84,6 +130,12 @@ assertHasName :: HasCallStack => [(Int, Int, String, Maybe String, Bool)] -> (In
 assertHasName names expected = assertBoolVerbose ("actual names: " ++ show names) $ any (matchRow expected) names
   where matchRow (l, c, nd, t, nr) (l', c', n, t', d) =
           l == l' && c == c' && (nr == Definition) == d && Just t == t'
+            && (case nd of Global n' -> n == n'; Local n' -> (n' ++ ":") `isPrefixOf` n)
+
+assertHasNameNoType :: HasCallStack => [(Int, Int, String, Maybe String, Bool)] -> (Int, Int, NameDefinition, NameRole) -> Assertion
+assertHasNameNoType names expected = assertBoolVerbose ("actual names: " ++ show names) $ any (matchRow expected) names
+  where matchRow (l, c, nd, nr) (l', c', n, t', d) =
+          l == l' && c == c' && (nr == Definition) == d && Nothing == t'
             && (case nd of Global n' -> n == n'; Local n' -> (n' ++ ":") `isPrefixOf` n)
 
 runGhcTest conn = do
