@@ -109,6 +109,21 @@ test_typeDef = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (2, 6, Global "X.MyString", "*", Definition)
   gsubAssert $ assertHasNameNoType names (2, 17, Global "GHC.Base.String", Use) -- TODO: kind should be *
 
+test_openTypeFamily :: Assertion
+test_openTypeFamily = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["{-# LANGUAGE TypeFamilies #-}", "module X where", "type family Not a"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (3, 13, Global "X.Not", "* -> *", Definition)
+  gsubAssert $ assertHasNameNoType names (3, 17, Local "X.a", Definition) -- TODO: kind should be *
+
+test_closedTypeFamily :: Assertion
+test_closedTypeFamily = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["{-# LANGUAGE TypeFamilies, DataKinds #-}", "module X where", "type family Not a where", "  Not True = False", "  Not False = True"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (3, 13, Global "X.Not", "Bool -> Bool", Definition)
+  gsubAssert $ assertHasNameNoType names (3, 17, Local "X.a", Definition) -- TODO: kind should be *
+  -- gsubAssert $ assertHasName names (4, 3, Global "X.Not", "Bool -> Bool", Use) -- TODO: should not be a definition
+  gsubAssert $ assertHasNameNoType names (4, 7, Global "GHC.Types.True", Use) -- TODO: type should be Bool
 
 
 
