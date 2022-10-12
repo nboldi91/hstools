@@ -19,37 +19,29 @@ module Language.Haskell.HsTools.Plugin.StoreInfo where
 
 import Control.Monad.Writer
 import Control.Monad.Reader
--- import qualified Data.Map as M
--- import qualified Data.IntMap as IM
 import Data.Maybe
 import Data.List
 import Database.PostgreSQL.Simple (Connection)
 
 import HsDecls
--- import HscTypes
 import HsExpr
 import HsExtension
 import SrcLoc
 import TcRnTypes
 import UniqFM
--- import Unique
-
--- import Outputable
 
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Plugin.Class
 import Language.Haskell.HsTools.Database
 
--- import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
+import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    -- TODO: get all names from env and filter by that
     context <- defaultStoreContext conn moduleId moduleName
-    -- putStrLn $ "tcg_type_env: " ++ (showSDocUnsafe $ ppr $ tcg_type_env env)
+    -- putStrLn $ show $ tcg_binds env
     let storeEnv = do
-          -- TODO: finish storing types
           store $ tcg_binds env
           store $ eltsUFM $ tcg_type_env env
     ((), types) <- runWriterT (runReaderT storeEnv context)

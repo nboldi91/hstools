@@ -130,7 +130,7 @@ test_closedTypeFamily = useTestRepo $ \conn -> do
   names <- getAllNames conn
   gsubAssert $ assertHasName names (3, 13, Global "X.Not", "Bool -> Bool", Definition)
   gsubAssert $ assertHasNameNoType names (3, 17, Local "X.a", Definition) -- TODO: kind should be *
-  -- gsubAssert $ assertHasName names (4, 3, Global "X.Not", "Bool -> Bool", Use) -- TODO: should not be a definition
+  gsubAssert $ assertHasName names (4, 3, Global "X.Not", "Bool -> Bool", Definition)
   gsubAssert $ assertHasNameNoType names (4, 7, Global "GHC.Types.True", Use) -- TODO: type should be Bool
 
 test_importedFunction :: Assertion
@@ -196,8 +196,8 @@ dynFlagsForTest = do
     { ghcLink = NoLink
     , hscTarget = HscNothing
     , pluginModNames = [pluginMod]
-    -- , pluginModNameOpts = [(pluginMod, connectionString)]
-    , pluginModNameOpts = [(pluginMod, "verbose"), (pluginMod, connectionString)]
+    , pluginModNameOpts = [(pluginMod, connectionString)]
+    -- , pluginModNameOpts = [(pluginMod, "verbose"), (pluginMod, connectionString)]
     }
 
 useTestRepo = withTestRepo connectionStringWithoutDB connectionDBName

@@ -25,7 +25,18 @@ import UniqFM (UniqFM)
 import UniqSet (UniqSet)
 
 instance Show a => Show (Located a) where
-  show (L l a) = "L(" ++ show l ++ ") (" ++ show a ++ ")"
+  show (L l a) = "L(" ++ shortShowSpan l ++ ") (" ++ show a ++ ")"
+
+-- | A short form of showing a range, without file name, for debugging purposes.
+shortShowSpan :: SrcSpan -> String
+shortShowSpan (UnhelpfulSpan _) = "??-??"
+shortShowSpan sp@(RealSrcSpan _)
+  = shortShowLoc (srcSpanStart sp) ++ "-" ++ shortShowLoc (srcSpanEnd sp)
+
+-- | A short form of showing a range, without file name, for debugging purposes.
+shortShowLoc :: SrcLoc -> String
+shortShowLoc (UnhelpfulLoc _) = "??"
+shortShowLoc (RealSrcLoc loc) = show (srcLocLine loc) ++ ":" ++ show (srcLocCol loc)
 
 deriving instance Show (ABExport GhcPs)
 deriving instance Show (AmbiguousFieldOcc GhcPs)
