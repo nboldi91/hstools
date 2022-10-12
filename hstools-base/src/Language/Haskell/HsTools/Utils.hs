@@ -27,10 +27,10 @@ roundUTCTime :: UTCTime -> UTCTime
 roundUTCTime (UTCTime day time) = UTCTime day (picosecondsToDiffTime $ round $ diffTimeToPicoseconds time)
   where round = (* 10^8) . (`div` 10^8)
 
-withTestFile :: FilePath -> String -> IO () -> IO ()
+withTestFile :: FilePath -> String -> IO a -> IO a
 withTestFile fileName content action = (writeFileSafe fileName content >> action) `finally` removeFile fileName
 
-withTestFileLines :: FilePath -> [String] -> IO () -> IO ()
+withTestFileLines :: FilePath -> [String] -> IO a -> IO a
 withTestFileLines fileName content action = (writeFileSafe fileName (concatMap (++ "\n") content) >> action) `finally` removeFile fileName
 
 writeFileSafe :: FilePath -> String -> IO ()
