@@ -168,7 +168,28 @@ test_reStore = useTestRepo $ \conn -> do
 
 test_typeError :: Assertion
 test_typeError = useTestRepo $ \conn -> do
-  withTestFileLines testFile ["module X where", "x = 4 + \"hello\""] (runGhcTestNoSuccessCheck conn)
+  withTestFileLines testFile ["module X where", "x = 4 + \"hello\""] (runGhcTestError conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasNameNoType names (2, 1, Global "X.x", Definition)
+
+test_parseErrorShouldNotClearExistingData :: Assertion
+test_parseErrorShouldNotClearExistingData = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "x = ()"] (runGhcTest conn)
+  withTestFileLines testFile ["module X where", "("] (runGhcTestError conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (2, 1, Global "X.x", "()", Definition)
+
+test_namingErrorShouldNotClearExistingData :: Assertion
+test_namingErrorShouldNotClearExistingData = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "x = ()"] (runGhcTest conn)
+  withTestFileLines testFile ["module X where", "x = y"] (runGhcTestError conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasNameNoType names (2, 1, Global "X.x", Definition)
+
+test_typeErrorShouldNotClearExistingData :: Assertion
+test_typeErrorShouldNotClearExistingData = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "x = ()"] (runGhcTest conn)
+  withTestFileLines testFile ["module X where", "x = 4 + \"hello\""] (runGhcTestError conn)
   names <- getAllNames conn
   gsubAssert $ assertHasNameNoType names (2, 1, Global "X.x", Definition)
 
@@ -205,6 +226,10 @@ runGhcTestNoSuccessCheck conn = do
 runGhcTest conn = do
   res <- runGhcTestNoSuccessCheck conn
   assertEqual True (succeeded res)
+
+runGhcTestError conn = do
+  res <- runGhcTestNoSuccessCheck conn
+  assertEqual True (failed res)
 
 testFile = "X.hs"
 
