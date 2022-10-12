@@ -69,17 +69,18 @@ test_oneDefWithTypeSig = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "x :: ()", "x = ()"] (runGhcTest conn)
   names <- getAllNames conn
   gsubAssert $ assertHasName names (2, 1, Global "X.x", "()", Definition)
-  -- gsubAssert $ assertHasName names (2, 6, "()", "*", Use) -- TODO
+  gsubAssert $ assertHasNameNoType names (2, 6, Global "GHC.Tuple.()", Use) -- TODO: kind should be *
   gsubAssert $ assertHasName names (3, 1, Global "X.x", "()", Definition)
   gsubAssert $ assertHasName names (3, 5, Global "GHC.Tuple.()", "()", Use)
 
 test_dataDef :: Assertion
 test_dataDef = useTestRepo $ \conn -> do
-  withTestFileLines testFile ["module X where", "data X = Y ()"] (runGhcTest conn)
+  withTestFileLines testFile ["module X where", "data X = Y { y :: () }"] (runGhcTest conn)
   names <- getAllNames conn
   gsubAssert $ assertHasName names (2, 6, Global "X.X", "*", Definition)
   gsubAssert $ assertHasName names (2, 10, Global "X.Y", "() -> X", Definition)
-  -- gsubAssert $ assertHasName names (2, 12, Global "()", "*", Use) -- TODO
+  gsubAssert $ assertHasName names (2, 14, Global "X.y", "X -> ()", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 19, Global "GHC.Tuple.()", Use) -- TODO: kind should be *
 
 test_newTypeDef :: Assertion
 test_newTypeDef = useTestRepo $ \conn -> do
@@ -131,6 +132,14 @@ test_closedTypeFamily = useTestRepo $ \conn -> do
   gsubAssert $ assertHasNameNoType names (3, 17, Local "X.a", Definition) -- TODO: kind should be *
   -- gsubAssert $ assertHasName names (4, 3, Global "X.Not", "Bool -> Bool", Use) -- TODO: should not be a definition
   gsubAssert $ assertHasNameNoType names (4, 7, Global "GHC.Types.True", Use) -- TODO: type should be Bool
+
+test_importedFunction :: Assertion
+test_importedFunction = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "import Data.List", "x = intercalate \"->\" [\"a\",\"b\"]"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasName names (3, 1, Global "X.x", "[Char]", Definition)
+  gsubAssert $ assertHasName names (3, 5, Global "Data.OldList.intercalate", "forall a. [a] -> [[a]] -> [a]", Use)
+
 
 
 test_multipleModules :: Assertion
@@ -187,8 +196,8 @@ dynFlagsForTest = do
     { ghcLink = NoLink
     , hscTarget = HscNothing
     , pluginModNames = [pluginMod]
-    , pluginModNameOpts = [(pluginMod, connectionString)]
-    -- , pluginModNameOpts = [(pluginMod, "verbose"), (pluginMod, connectionString)]
+    -- , pluginModNameOpts = [(pluginMod, connectionString)]
+    , pluginModNameOpts = [(pluginMod, "verbose"), (pluginMod, connectionString)]
     }
 
 useTestRepo = withTestRepo connectionStringWithoutDB connectionDBName

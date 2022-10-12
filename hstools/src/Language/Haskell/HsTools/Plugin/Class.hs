@@ -29,6 +29,7 @@ import PlaceHolder
 import SrcLoc
 import TyCon
 import TyCoRep
+import TysWiredIn
 import Unique
 import Var
 
@@ -38,6 +39,7 @@ import Language.Haskell.HsTools.Plugin.Types
 type IsGhcPass p r =
   ( HaskellAst Name r -- skip
   , HaskellAst Id r -- skip
+  , HaskellAst TypedName r
   , HaskellAst (IdP (GhcPass p)) r
   , HaskellAst (XExprWithTySig (GhcPass p)) r
   , HaskellAst (XSigPat (GhcPass p)) r
@@ -48,57 +50,97 @@ type IsGhcPass p r =
   , HaskellAst (NameOrRdrName (IdP (GhcPass p))) r
   )
 
-class HasId a where
-  getNameAndType :: a -> Maybe (Name, Type)
+data TypedName = TN { tnName :: Name, tnType :: Type }
 
-instance HasId TyThing where
-  getNameAndType (AnId id) = Just (Var.varName id, varType id)
-  getNameAndType (AConLike conLike) = getNameAndType conLike
-  getNameAndType (ATyCon tycon) = getNameAndType tycon
-  getNameAndType (ACoAxiom _) = Nothing
+class HasTypedName a where
+  getTypedName :: a -> Maybe TypedName
 
-instance HasId ConLike where
-  getNameAndType (RealDataCon dataCon) = getNameAndType dataCon
-  getNameAndType (PatSynCon patSyn) = getNameAndType patSyn
+instance HasTypedName Id where
+  getTypedName id = Just $ TN (Var.varName id) (varType id) 
 
-instance HasId TyCon where
-  getNameAndType tc = Just (tyConName tc, tyConKind tc) 
+instance HasTypedName TyThing where
+  getTypedName (AnId id) = getTypedName id
+  getTypedName (AConLike conLike) = getTypedName conLike
+  getTypedName (ATyCon tycon) = getTypedName tycon
+  getTypedName (ACoAxiom _) = Nothing
 
-instance HasId PatSyn where
-  getNameAndType _ps = Nothing
+instance HasTypedName ConLike where
+  getTypedName (RealDataCon dataCon) = getTypedName dataCon
+  getTypedName (PatSynCon patSyn) = getTypedName patSyn
 
-instance HasId DataCon where
-  getNameAndType dc = Just (dataConName dc, dataConRepType dc) 
+instance HasTypedName TyCon where
+  getTypedName tc = Just $ TN (tyConName tc) (tyConKind tc) 
+
+instance HasTypedName PatSyn where
+  getTypedName _ps = Nothing
+
+instance HasTypedName DataCon where
+  getTypedName dc = Just $ TN (dataConName dc) (dataConRepType dc) 
 
 class HaskellAst a r where
     store :: a -> StoreM r ()
 
 instance HaskellAst Name NameRecord where
-    store id = asks scSpan >>= \case
-        RealSrcSpan span -> do
-            currentModuleName <- asks scModuleName
-            defined <- asks scDefining
-            let storedName = NameRecord
-                    { nmName = generateFullName currentModuleName id
-                    , nmNamespace = nameNamespace id
-                    , nmIsDefined = defined
-                    , nmPos = realSrcSpanToNodePos span
-                    }
-            tell [storedName] 
-        _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
+  store id = asks scSpan >>= \case
+    RealSrcSpan span -> do
+      currentModuleName <- asks scModuleName
+      defined <- asks scDefining
+      let storedName = NameRecord
+            { nmName = generateFullName currentModuleName id
+            , nmNamespace = nameNamespace id
+            , nmIsDefined = defined
+            , nmPos = realSrcSpanToNodePos span
+            }
+      tell [storedName] 
+    _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
 
+instance HaskellAst TypedName TypeRecord where
+  store (TN name typ) = do
+    currentModuleName <- asks scModuleName
+    tell [ nameTypeToTypeRecord currentModuleName name typ ]
+
+instance HaskellAst TypedName NameRecord where
+  store (TN name _) = store name
+
+instance HaskellAst TypedName NameAndTypeRecord where
+  store (TN name typ) = do 
+    span <- asks scSpan
+    case srcSpanToNodePos span of
+      Just np -> do
+        currentModuleName <- asks scModuleName
+        defined <- asks scDefining
+        let typeStr = showSDocUnsafe $ ppr typ
+        let modName = nameModule_maybe name
+            fullName = case modName of
+                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name)
+                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
+            record = NameAndTypeRecord
+                { ntrName = fullName
+                , ntrNamespace = nameNamespace name
+                , ntrIsDefined = defined
+                , ntrType = Just typeStr
+                , ntrPos = np
+                }
+        tell [record] 
+      Nothing -> return ()
+  
 instance HaskellAst Name TypeRecord where
   store _ = return ()
 
 instance HaskellAst Id NameRecord where
-  store _ = return ()
+  store = store . getTypedName
 
 instance HaskellAst Id TypeRecord where
-  store id = do
-    currentModuleName <- asks scModuleName
-    case idDetails id of
-      DataConWorkId dc -> tell [ nameTypeToTypeRecord currentModuleName (dataConName dc) (dataConRepType dc) ]
-      _ -> tell [ nameTypeToTypeRecord currentModuleName (Var.varName id) (varType id) ]
+  store id =
+    store $ case idDetails id of
+      DataConWorkId dc -> getTypedName dc
+      _ -> getTypedName id
+
+instance HaskellAst Id NameAndTypeRecord where
+  store id =
+    store $ case idDetails id of
+      DataConWorkId dc -> getTypedName dc
+      _ -> getTypedName id
 
 nameTypeToTypeRecord :: String -> Name -> Type -> TypeRecord
 nameTypeToTypeRecord currentModuleName name typ
@@ -111,28 +153,6 @@ generateFullName :: String -> Name -> String
 generateFullName currentModuleName name = case nameModule_maybe name of
   (Just mn) -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name)
   Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
-
-instance HaskellAst Id NameAndTypeRecord where
-  store id = do 
-    span <- asks scSpan
-    case srcSpanToNodePos span of
-      Just np -> do
-        currentModuleName <- asks scModuleName
-        defined <- asks scDefining
-        let typeStr = showSDocUnsafe $ ppr $ varType id
-        let modName = nameModule_maybe (Var.varName id)
-            fullName = case modName of
-                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
-                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
-            record = NameAndTypeRecord
-                { ntrName = fullName
-                , ntrNamespace = nameNamespace (Var.varName id)
-                , ntrIsDefined = defined
-                , ntrType = Just typeStr
-                , ntrPos = np
-                }
-        tell [record] 
-      Nothing -> return ()
 
 instance HaskellAst Name NameAndTypeRecord where
   store id = do 
@@ -159,7 +179,7 @@ instance HaskellAst Type r where
   store _ = return ()
 
 instance HaskellAst a r => HaskellAst (Located a) r where
-  store (L span ast) = do
+  store (L span ast) = {- trace ("##L: " ++ show span) $ -} do
     thSpan <- case srcSpanToNodePos span of
                 Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
                 Nothing -> return False
@@ -209,6 +229,7 @@ instance IsGhcPass p r => HaskellAst (HsType (GhcPass p)) r where
     store (HsAppTy _ lhs rhs) = store lhs >> store rhs
     store (HsFunTy _ lhs rhs) = store lhs >> store rhs
     store (HsListTy _ t) = store t
+    store (HsTupleTy _ _ []) = store (getTypedName unitTyCon) -- unit type
     store (HsTupleTy _ _ ts) = store ts
     store (HsSumTy _ ts) = store ts
     store (HsOpTy _ lhs op rhs) = store lhs >> store op >> store rhs
