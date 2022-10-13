@@ -13,6 +13,7 @@ module Language.Haskell.HsTools.LspServer.LspServer where
 
 import Language.LSP.Server as LSP
 import Language.LSP.Types as LSP
+import Language.LSP.Logging as LSP
 import Control.Monad.IO.Class
 import Control.Monad
 import Control.Exception
@@ -25,9 +26,12 @@ import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Vector as V
 import Control.Concurrent (forkIO)
+import Control.Concurrent.Chan
 import Control.Concurrent.MVar
 import System.IO
-import Colog.Core.Action
+import qualified Colog.Core as L
+import Colog.Core (LogAction (..), WithSeverity (..))
+import Prettyprinter
 
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
@@ -43,7 +47,19 @@ import Language.Haskell.HsTools.Utils
 mainWithHandles :: Handle -> Handle -> IO Int
 mainWithHandles input output = do
   fileStore <- newEmptyMVar
-  runServerWithHandles (LogAction $ const $ return ()) (LogAction $ const $ return ()) input output $ ServerDefinition
+
+  loggerChan <- newChan
+
+  let ioLogger :: LogAction IO (WithSeverity LspServerLog)
+      ioLogger = L.cmap (show . prettyMsg) (L.LogAction $ writeChan loggerChan)
+      lspLogger :: LogAction (LspM config) (WithSeverity LspServerLog)
+      lspLogger =
+        let clientLogger = L.cmap (fmap (T.pack . show . pretty)) LSP.defaultClientLogger
+        in clientLogger <> L.hoistLogAction liftIO ioLogger
+
+  forkIO $ forever $ readChan loggerChan >>= \str -> hPutStrLn stderr str >> hFlush stderr
+
+  runServerWithHandles ioLogger lspLogger input output $ ServerDefinition
     { onConfigurationChange = loadConfig
     , doInitialize = \env _req -> pure $ Right env
     , staticHandlers = handlers
@@ -51,6 +67,14 @@ mainWithHandles input output = do
     , options = hstoolsOptions
     , LSP.defaultConfig = hsToolsDefaultConfig fileStore
     }
+  where
+    prettyMsg l = "[" <> viaShow (L.getSeverity l) <> "] " <> pretty (L.getMsg l)
+  --   ioLogger :: LogAction IO (WithSeverity LspServerLog)
+  --   ioLogger = L.cmap (show . prettyMsg) (L.logFlush stderr L.*< L.logStringStderr) -- (writeChan loggerChan)
+  --   lspLogger :: LogAction (LspM config) (WithSeverity LspServerLog)
+  --   lspLogger =
+  --     let clientLogger = L.cmap (fmap (T.pack . show . pretty)) LSP.defaultClientLogger
+  --     in clientLogger <> L.hoistLogAction liftIO ioLogger
 
 handlers :: Handlers (LspM Config)
 handlers = mconcat
