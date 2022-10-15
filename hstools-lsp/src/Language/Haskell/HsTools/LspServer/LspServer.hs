@@ -67,14 +67,7 @@ mainWithHandles input output = do
     , options = hstoolsOptions
     , LSP.defaultConfig = hsToolsDefaultConfig fileStore
     }
-  where
-    prettyMsg l = "[" <> viaShow (L.getSeverity l) <> "] " <> pretty (L.getMsg l)
-  --   ioLogger :: LogAction IO (WithSeverity LspServerLog)
-  --   ioLogger = L.cmap (show . prettyMsg) (L.logFlush stderr L.*< L.logStringStderr) -- (writeChan loggerChan)
-  --   lspLogger :: LogAction (LspM config) (WithSeverity LspServerLog)
-  --   lspLogger =
-  --     let clientLogger = L.cmap (fmap (T.pack . show . pretty)) LSP.defaultClientLogger
-  --     in clientLogger <> L.hoistLogAction liftIO ioLogger
+  where prettyMsg l = "[" <> viaShow (L.getSeverity l) <> "] " <> pretty (L.getMsg l)
 
 handlers :: Handlers (LspM Config)
 handlers = mconcat
@@ -215,7 +208,6 @@ tryToConnectToDB = do
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
     Right conn -> handleErrors conn "tryToConnectToDB" $ do 
-      sendMessage "Connected to DB"
       liftIO $ reinitializeTablesIfNeeded conn
       modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged conn
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
