@@ -1,20 +1,45 @@
 
-Roadmap:
-
- - Show a visual indication of the current file being up-to-date
- - Detect compilation errors and show them in the IDE
-
-Future plans:
-
   - Refine name-based info:
     - Multi-name bindings (field and value for puns)
     - What is a definition anyway?
       - For normal functions
       - For class functions / instance definitions
     - Extend storing types to things that are not bindings.
-  - Attach comments to names and show them in hovers
+
+  - Extend type info collected
+    - Add kinds for type variables defined locally
+    - Add kinds to imported types
+
+  - Hover info
+    - Attach comments to names and show them in hovers
+    - Collect comments on arguments / parameters 
+    - Generate markdown formatted messages from the comments
+    - Generate a tooltip where different parts can be followed / expanded (for example: the ability to jump on the type definition for the type of the function) ??
+
   - Rename refactoring
+    - Simple cases
+    - Detect the more complex cases
+
   - Auto-complete support
-  - Based on local and imported stuff
-  - Based on modules that could be imported
-  - Based on an indexing of a package universe
+    - Auto-complete based on current rewrites (start writing a line and)
+    - Auto complete for imported module names
+    - Auto complete for definitions from a certain module or modules (inside module restrictions, with qualified use)
+    - Auto-complete for field names (inside {})
+    - Based on local top-level bindings
+    - Based on local scopes
+    - Based on imported definitions
+    - Based on modules that could be imported / imports that could be extended
+    - Based on an indexing of a package universe ??
+    - Auto-complete based on type (lookup constructors / functions that result in the given type) ??
+
+  - Detect compilation errors and show them in the IDE
+    - Needs a more recent GHC version which supports dynflag plugins
+
+  - Refactorings:
+    - Extract binding
+    - Inline binding
+    - Generate type signature
+    - Organize imports
+    - Organize extensions
+
+  - Auto corrections

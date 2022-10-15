@@ -1,0 +1,15 @@
+
+value x :: ()
+
+function f :: a -> b
+
+if in another module
+function X.f :: a -> b
+
+type variable a :: *
+
+function f :: a -> b
+----
+Comment on the function
+
+arg1: comment on arg1
