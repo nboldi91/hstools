@@ -20,13 +20,15 @@ module Language.Haskell.HsTools.Plugin.StoreInfo where
 import Control.Monad.Writer
 import Control.Monad.Reader
 import Data.Maybe
+import qualified Data.Map as Map
 import Data.List
 import Database.PostgreSQL.Simple (Connection)
 
+import ApiAnnotation
 import HsDecls
+import HscTypes
 import HsExpr
 import HsExtension
-import HsSyn
 import SrcLoc
 import TcRnTypes
 import UniqFM
@@ -38,21 +40,49 @@ import Language.Haskell.HsTools.Database
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
 
-storeParsed :: StoreParams -> Located (HsModule GhcPs) -> IO ()
+storeParsed :: StoreParams -> HsParsedModule -> IO ()
 storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
     context <- defaultStoreContext conn moduleId moduleName
-    ((), defs) <- runWriterT (runReaderT (store md) context)
+    ((), defs) <- runWriterT (runReaderT (store $ hpm_module md) context)
     when isVerbose $ do
       putStrLn "### Storing ast definitions:"
       mapM_ print defs
     astIds <- persistAst conn (map convertLocation defs)
-    persistDefinitions conn (map convertDefinition (defs `zip` astIds))
-    -- TODO: persist comments
+    defIds <- persistDefinitions conn (map convertDefinition $ defs `zip` astIds)
+    persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (defs `zip` defIds)
   where
     convertLocation (ParseDefinitionRecord _ (NodePos startRow startColumn endRow endColumn))
       = (moduleId, startRow, startColumn, endRow, endColumn)
     convertDefinition ((ParseDefinitionRecord kind _), astId)
       = (moduleId, astId, fromEnum kind)
+
+findDefinitionOfComments :: Int -> Map.Map SrcSpan [Located AnnotationComment] -> [(ParseRecord, Int)] -> [(Int, Int, String)]
+findDefinitionOfComments moduleId commMap records =
+  map (\(defId, text) -> (moduleId, defId, text))
+    $ definitionsComments
+      (catMaybes $ map (\(L l c) -> (, getAnnString c) <$> srcSpanToNodePos l) $ concat $ Map.elems commMap)
+      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos sr sc _ _), defId) -> ((sr, sc), defId)) records)
+      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos _ _ er ec), defId) -> ((er, ec), defId)) records)
+
+definitionsComments :: [(NodePos, String)] -> Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> [(Int, String)]
+definitionsComments comments defStartMap defEndMap = catMaybes $ map (findCommentedDef defStartMap defEndMap) comments
+
+findCommentedDef :: Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> (NodePos, String) -> Maybe (Int, String)
+findCommentedDef defStartMap defEndMap (np, comm)
+  | "-- |" `isPrefixOf` comm || "{- |" `isPrefixOf` comm || "{-|" `isPrefixOf` comm =
+    fmap ((,comm) . fst) $ Map.minView $ snd $ Map.split (npEndRow np, npEndCol np) defStartMap
+  | "-- ^" `isPrefixOf` comm || "{- ^" `isPrefixOf` comm || "{-^" `isPrefixOf` comm =
+    fmap ((,comm) . fst) $ Map.maxView $ fst $ Map.split (npStartRow np, npStartCol np) defEndMap
+  | otherwise = Nothing
+
+getAnnString :: AnnotationComment -> String
+getAnnString (AnnDocCommentNext str) = str
+getAnnString (AnnDocCommentPrev str) = str
+getAnnString (AnnDocCommentNamed str) = str
+getAnnString (AnnDocSection _ str) = str
+getAnnString (AnnDocOptions str) = str
+getAnnString (AnnLineComment str) = str
+getAnnString (AnnBlockComment str) = str
 
 storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do

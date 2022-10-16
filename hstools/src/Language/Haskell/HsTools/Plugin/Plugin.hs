@@ -74,14 +74,12 @@ cleanAndRecordModule conn ms = do
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
   when (isVerbose clOpts) $ putStrLn $ "Starting stage: parsedAction"
-  -- putStrLn $ show $ snd $ hpm_annotations mod
-  -- putStrLn $ show $ hpm_module mod
   withDB clOpts $ \conn -> do
     reinitializeTablesIfNeeded conn
     moduleFilePath <- cleanAndRecordModule conn ms
     let modName = moduleNameString $ ms_mod_name ms
     case moduleFilePath of
-      Just fp -> doRunStage (isVerbose clOpts) conn "parse" fp modName (< SourceSaved) SourceSaved (flip storeParsed (hpm_module mod))
+      Just fp -> doRunStage (isVerbose clOpts) conn "parse" fp modName (< SourceSaved) SourceSaved (flip storeParsed mod)
       Nothing -> return ()
   return mod
 

@@ -25,6 +25,7 @@ import Plugins
 
 import Language.Haskell.HsTools.Utils
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.HandleErrors
 
 import Language.Haskell.HsTools.Plugin ()
 
@@ -153,9 +154,32 @@ test_importedFunction = useTestRepo $ \conn -> do
 
 test_comments :: Assertion
 test_comments = useTestRepo $ \conn -> do
-  withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "x = ()"] (runGhcTest conn)
+  withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "-- ^ another comment for x", "x = ()"] (runGhcTest conn)
   defs <- getAllDefinitions conn
-  assertEqual [(fromEnum DefSignature, "X.x", 3, 1, 3, 8), (fromEnum DefValue, "X.x", 4, 1, 4, 7)] defs
+  assertEqual
+    [ (fromEnum DefSignature, Just "X.x", 3, 1, 3, 8)
+    , (fromEnum DefValue, Just "X.x", 5, 1, 5, 7)
+    ] defs
+  comments <- getAllComments conn
+  assertEqual [(3, 1, "-- ^ another comment for x"), (3, 1, "-- | comment for x")] comments
+
+test_commentsInLineOnArgs :: Assertion
+test_commentsInLineOnArgs = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "f :: String {-^ arg1 -} -> {-| arg2 -} Int -> String {-^ result -}", "f \"\" _ = \"\""] (runGhcTest conn)
+  defs <- getAllDefinitions conn
+  assertEqual
+    [ (fromEnum DefSignature, Just "X.f", 2, 1, 2, 53)
+    , (fromEnum DefParameter, Nothing, 2, 6, 2, 12)
+    , (fromEnum DefParameter, Nothing, 2, 40, 2, 43)
+    , (fromEnum DefParameter, Nothing, 2, 47, 2, 53)
+    , (fromEnum DefValue, Just "X.f", 3, 1, 3, 12)
+    ] defs
+  comments <- getAllComments conn
+  assertEqual
+    [ (2, 6, "{-^ arg1 -}")
+    , (2, 40, "{-| arg2 -}")
+    , (2, 47, "{-^ result -}")
+    ] comments
 
 test_multipleModules :: Assertion
 test_multipleModules = useTestRepo $ \conn -> do

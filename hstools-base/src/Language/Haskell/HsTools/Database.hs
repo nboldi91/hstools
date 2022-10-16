@@ -17,8 +17,15 @@ data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
 
 data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum, Eq, Ord)
 
-data DefinitionKind = DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
+data DefinitionKind
+  = DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
+  | DefParameter
   deriving (Show, Eq, Enum)
+
+isSignatureDef :: DefinitionKind -> Bool
+isSignatureDef DefSignature = True
+isSignatureDef DefClassOpSignature = True
+isSignatureDef _ = False
 
 getCompiledTime :: Connection -> FilePath -> IO (Maybe UTCTime)
 getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only filePath)
@@ -70,8 +77,8 @@ getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefi
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
 
-persistDefinitions :: Connection -> [(Int, Int, Int)] -> IO ()
-persistDefinitions conn definitions = void $ executeMany conn "INSERT INTO definitions (module, astNode, definitionKind) VALUES (?, ?, ?)" definitions
+persistDefinitions :: Connection -> [(Int, Int, Int)] -> IO [Int]
+persistDefinitions conn definitions = fmap head <$> returning conn "INSERT INTO definitions (module, astNode, definitionKind) VALUES (?, ?, ?) RETURNING definitionId" definitions
 
 persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool, Maybe Int, Maybe Int)] -> IO ()
 persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn) VALUES (?, ?, ?, ?, ?, ?, ?)" names
@@ -82,8 +89,14 @@ persistTypes conn types = void $ executeMany conn "INSERT INTO types (typedName,
 persistTHRange' :: Connection -> Int -> Int -> IO ()
 persistTHRange' conn mod astNode = void $ execute conn "INSERT INTO thRanges (module, astNode) VALUES (?, ?)" (mod, astNode)
 
-getAllDefinitions :: Connection -> IO [(Int, String, Int, Int, Int, Int)]
-getAllDefinitions conn = query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn"
+persistComments :: Connection -> [(Int, Int, String)] -> IO ()
+persistComments conn comments = void $ executeMany conn "INSERT INTO comments (module, targetDefinition, commentText) VALUES (?, ?, ?)" comments
+
+getAllComments :: Connection -> IO [(Int, Int, String)]
+getAllComments conn = query_ conn "SELECT startRow, startColumn, commentText FROM ast a JOIN comments c ON c.targetDefinition = a.astId ORDER BY startRow, startColumn"
+
+getAllDefinitions :: Connection -> IO [(Int, Maybe String, Int, Int, Int, Int)]
+getAllDefinitions conn = query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn"
 
 getTHRanges :: Connection -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId
@@ -156,6 +169,7 @@ cleanModulesFromDB conn filePath = do
 cleanRelatedData :: Connection -> Int -> IO ()
 cleanRelatedData conn moduleId = void $ do
   execute conn "DELETE FROM definitions WHERE module = ?" [moduleId]
+  execute conn "DELETE FROM comments WHERE module = ?" [moduleId]
   execute conn "DELETE FROM names WHERE module = ?" [moduleId]
   execute conn "DELETE FROM thRanges WHERE module = ?" [moduleId]
   execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
@@ -237,9 +251,9 @@ databaseSchema = [sql|
     );
 
   CREATE TABLE comments
-    ( module INT
+    ( module INT NOT NULL
     , CONSTRAINT fk_comment_module FOREIGN KEY(module) REFERENCES modules(moduleId)
-    , targetDefinition INT
+    , targetDefinition INT NOT NULL
     , CONSTRAINT fk_comment_def FOREIGN KEY(targetDefinition) REFERENCES definitions(definitionId)
     , commentText TEXT NOT NULL
     );

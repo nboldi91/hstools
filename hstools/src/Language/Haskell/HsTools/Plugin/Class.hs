@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE ViewPatterns #-}
 
 module Language.Haskell.HsTools.Plugin.Class where
 
@@ -98,6 +99,11 @@ instance CanStoreDefinition NameAndTypeRecord where
   storeDefinition _ = return ()
 
 storeDefCtx :: CanStoreDefinition r => DefinitionKind -> StoreM r () -> StoreM r ()
+storeDefCtx DefParameter st = do
+  currDef <- currentDefinition
+  case currDef of
+    Just d | isSignatureDef (dcKind d) -> storeDefinition DefParameter >> definitionContext DefParameter st
+    _ -> st
 storeDefCtx k st = storeDefinition k >> definitionContext k st
 
 class HaskellAst a r where
@@ -219,11 +225,14 @@ instance HaskellAst NoExt r where
   store _ = return ()
 
 instance HaskellAst a r => HaskellAst (Located a) r where
-  store (L span ast) = {- trace ("##L: " ++ show span) $ -} do
-    thSpan <- case srcSpanToNodePos span of
-                Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
-                Nothing -> return False
-    when (not thSpan) $ (if isGoodSrcSpan span then withSpan span else id) $ store ast
+  store = storeLoc store
+
+storeLoc :: (a -> StoreM r ()) -> Located a -> StoreM r ()
+storeLoc st (L span ast) = {- trace ("##L: " ++ show span) $ -} do
+  thSpan <- case srcSpanToNodePos span of
+              Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
+              Nothing -> return False
+  when (not thSpan) $ (if isGoodSrcSpan span then withSpan span else id) $ st ast
 
 instance HaskellAst a r => HaskellAst [a] r where
     store = mapM_ store
@@ -263,29 +272,40 @@ instance IsGhcPass p r => HaskellAst (Sig (GhcPass p)) r where
     store (XSig {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsType (GhcPass p)) r where
-    store (HsForAllTy _ vars body) = store vars >> store body
-    store (HsQualTy _ ctx body) = store ctx >> store body
-    store (HsTyVar _ _ id) = store id
-    store (HsAppTy _ lhs rhs) = store lhs >> store rhs
-    store (HsFunTy _ lhs rhs) = store lhs >> store rhs
-    store (HsListTy _ t) = store t
-    store (HsTupleTy _ _ []) = store (getTypedName unitTyCon) -- unit type
-    store (HsTupleTy _ _ ts) = store ts
-    store (HsSumTy _ ts) = store ts
-    store (HsOpTy _ lhs op rhs) = store lhs >> store op >> store rhs
-    store (HsParTy _ t) = store t
-    store (HsIParamTy _ _ ty) = store ty -- implicit params are not resolved here
-    store (HsStarTy _ _) = return ()
-    store (HsKindSig _ t k) = store t >> store k
-    store (HsSpliceTy _ splice) = store splice
-    store (HsDocTy _ ty _) = store ty
-    store (HsBangTy _ _ t) = store t
-    store (HsRecTy _ fields) = store fields
-    store (HsExplicitListTy _ _ ts) = store ts
-    store (HsExplicitTupleTy _ ts) = store ts
-    store (HsTyLit {}) = return () -- nothing to store
-    store (HsWildCardTy {}) = return () -- nothing to store
-    store (XHsType {}) = return ()
+  store t
+    | Just ls <- splitHsFunTys t
+    = mapM_ (storeLoc $ storeDefCtx DefParameter . store) ls
+  store (HsFunTy {}) = error "Should have been handled earlier"
+  store (HsForAllTy _ vars body) = store vars >> store body
+  store (HsQualTy _ ctx body) = store ctx >> store body
+  store (HsTyVar _ _ id) = store id
+  store (HsAppTy _ lhs rhs) = store lhs >> store rhs
+  store (HsListTy _ t) = store t
+  store (HsTupleTy _ _ []) = store (getTypedName unitTyCon) -- unit type
+  store (HsTupleTy _ _ ts) = store ts
+  store (HsSumTy _ ts) = store ts
+  store (HsOpTy _ lhs op rhs) = store lhs >> store op >> store rhs
+  store (HsParTy _ t) = store t
+  store (HsIParamTy _ _ ty) = store ty -- implicit params are not resolved here
+  store (HsStarTy _ _) = return ()
+  store (HsKindSig _ t k) = store t >> store k
+  store (HsSpliceTy _ splice) = store splice
+  store (HsDocTy _ ty _) = store ty
+  store (HsBangTy _ _ t) = store t
+  store (HsRecTy _ fields) = store fields
+  store (HsExplicitListTy _ _ ts) = store ts
+  store (HsExplicitTupleTy _ ts) = store ts
+  store (HsTyLit {}) = return () -- nothing to store
+  store (HsWildCardTy {}) = return () -- nothing to store
+  store (XHsType {}) = return ()
+
+splitHsFunTys :: HsType p -> Maybe [LHsType p]
+splitHsFunTys (HsFunTy _ t1 t2) = Just $ t1 : splitHsFunTys' t2
+splitHsFunTys _ = Nothing
+
+splitHsFunTys' :: LHsType p -> [LHsType p]
+splitHsFunTys' (unLoc -> HsFunTy _ t1 t2) = t1 : splitHsFunTys' t2
+splitHsFunTys' t = [t]
 
 instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
     store (UserTyVar _ id) = defining $ store id
