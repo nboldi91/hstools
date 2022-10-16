@@ -20,12 +20,13 @@ import HsExpr
 import HsExtension
 import HsPat
 import HsTypes
+import HsSyn
 import IdInfo
 import Module
 import Name
 import Outputable
+import RdrName
 import PatSyn
-import PlaceHolder
 import SrcLoc
 import TyCon
 import TyCoRep
@@ -33,6 +34,7 @@ import TysWiredIn
 import Unique
 import Var
 
+import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
 
@@ -40,6 +42,7 @@ type IsGhcPass p r =
   ( HaskellAst Name r -- skip
   , HaskellAst Id r -- skip
   , HaskellAst TypedName r
+  , CanStoreDefinition r
   , HaskellAst (IdP (GhcPass p)) r
   , HaskellAst (XExprWithTySig (GhcPass p)) r
   , HaskellAst (XSigPat (GhcPass p)) r
@@ -77,22 +80,50 @@ instance HasTypedName PatSyn where
 instance HasTypedName DataCon where
   getTypedName dc = Just $ TN (dataConName dc) (dataConRepType dc) 
 
+class CanStoreDefinition r where
+  storeDefinition :: DefinitionKind -> StoreM r ()
+
+instance CanStoreDefinition ParseRecord where
+  storeDefinition k = srcSpanToNodePos <$> asks scSpan >>= \case 
+    Just np -> tell [ ParseDefinitionRecord k np ]
+    Nothing -> return ()
+
+instance CanStoreDefinition NameRecord where
+  storeDefinition _ = return ()
+
+instance CanStoreDefinition TypeRecord where
+  storeDefinition _ = return ()
+
+instance CanStoreDefinition NameAndTypeRecord where
+  storeDefinition _ = return ()
+
+storeDefCtx :: CanStoreDefinition r => DefinitionKind -> StoreM r () -> StoreM r ()
+storeDefCtx k st = storeDefinition k >> definitionContext k st
+
 class HaskellAst a r where
     store :: a -> StoreM r ()
+
+instance HaskellAst RdrName ParseRecord where
+  store _ = return ()
 
 instance HaskellAst Name NameRecord where
   store id = asks scSpan >>= \case
     RealSrcSpan span -> do
       currentModuleName <- asks scModuleName
+      definition <- currentDefinition
       defined <- asks scDefining
       let storedName = NameRecord
             { nmName = generateFullName currentModuleName id
             , nmNamespace = nameNamespace id
             , nmIsDefined = defined
+            , nmDefinitionOf = guard defined >> definition >>= srcSpanToNodePos . dcSpan
             , nmPos = realSrcSpanToNodePos span
             }
       tell [storedName] 
     _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
+
+instance HaskellAst TypedName ParseRecord where
+  store _ = return ()
 
 instance HaskellAst TypedName TypeRecord where
   store (TN name typ) = do
@@ -124,7 +155,13 @@ instance HaskellAst TypedName NameAndTypeRecord where
         tell [record] 
       Nothing -> return ()
   
+instance HaskellAst Name ParseRecord where
+  store _ = return ()
+
 instance HaskellAst Name TypeRecord where
+  store _ = return ()
+
+instance HaskellAst Id ParseRecord where
   store _ = return ()
 
 instance HaskellAst Id NameRecord where
@@ -178,6 +215,9 @@ instance HaskellAst Name NameAndTypeRecord where
 instance HaskellAst Type r where
   store _ = return ()
 
+instance HaskellAst NoExt r where
+  store _ = return ()
+
 instance HaskellAst a r => HaskellAst (Located a) r where
   store (L span ast) = {- trace ("##L: " ++ show span) $ -} do
     thSpan <- case srcSpanToNodePos span of
@@ -209,9 +249,9 @@ instance IsGhcPass p r => HaskellAst (HsValBinds (GhcPass p)) r where
     store (XValBindsLR (NValBinds binds sigs)) = store sigs >> store (map snd binds)
 
 instance IsGhcPass p r => HaskellAst (Sig (GhcPass p)) r where
-    store (TypeSig _ ids types) = defining (store ids) >> store types
-    store (PatSynSig _ ids types) = defining (store ids) >> store types
-    store (ClassOpSig _ _ ids types) = defining (store ids) >> store types
+    store (TypeSig _ ids types) = storeDefCtx DefSignature $ defining (store ids) >> store types
+    store (PatSynSig _ ids types) = storeDefCtx DefPatternSynonym $ defining (store ids) >> store types
+    store (ClassOpSig _ _ ids types) = storeDefCtx DefClassOpSignature $ defining (store ids) >> store types
     store (IdSig {}) = return () -- generated code
     store (FixSig _ sig) = store sig
     store (InlineSig _ ids _) = store ids
@@ -255,14 +295,14 @@ instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
     store (XTyVarBndr _) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
-    store (FunBind _ funId matches _ _) = defining (store funId) >> store matches
-    store (PatBind _ lhs rhs _) = store lhs >> store rhs
-    store (VarBind _ id rhs _) = do
-      isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
+    store (FunBind _ funId matches _ _) = storeDefCtx DefValue $ defining (store funId) >> store matches
+    store (PatBind _ lhs rhs _) = storeDefCtx DefValue $ store lhs >> store rhs
+    store (VarBind _ id rhs _) = storeDefCtx DefValue $ do
+      isInstanceDefinition <- inInstanceDefinition
       if isInstanceDefinition then store id else defining $ store id
       store rhs 
-    store (AbsBinds _ _ _ _ _ binds _) = store binds
-    store (PatSynBind _ bind) = store bind
+    store (AbsBinds _ _ _ _ _ binds _) = storeDefCtx DefValue $ store binds
+    store (PatSynBind _ bind) = storeDefCtx DefPatternSynonym $ store bind
     store (XHsBindsLR {}) = return ()
 
 instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (MatchGroup (GhcPass p) a) r where 
@@ -275,7 +315,7 @@ instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (Match (GhcPass p) a) r w
 
 instance (HaskellAst a r) => HaskellAst (HsMatchContext a) r where 
   store (FunRhs id _ _) = do
-    isInstanceDefinition <- asks ((== InstanceDefinition) . scDefinition)
+    isInstanceDefinition <- inInstanceDefinition
     if isInstanceDefinition then store id else defining $ store id
   store _ = return () -- all the other cases are unrelevant
 
@@ -288,7 +328,7 @@ instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (GRHS (GhcPass p) a) r wh
     store (XGRHS {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsLocalBinds (GhcPass p)) r where 
-    store (HsValBinds _ binds) = store binds
+    store (HsValBinds _ binds) = storeDefCtx DefValue $ store binds
     store (HsIPBinds {}) = return () -- implicit parameters
     store (EmptyLocalBinds {}) = return ()
     store (XHsLocalBindsLR {}) = return ()
@@ -457,7 +497,7 @@ instance IsGhcPass p r => HaskellAst (HsGroup (GhcPass p)) r where
     store (XHsGroup {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsDecl (GhcPass p)) r where 
-    store (TyClD _ d) = store d
+    store (TyClD _ d) = storeDefCtx DefTypeClass $ store d
     store (InstD _ d) = store d
     store (DerivD _ d) = store d
     store (ValD _ d) = store d
@@ -482,7 +522,7 @@ instance IsGhcPass p r => HaskellAst (TyClDecl (GhcPass p)) r where
     store (XTyClDecl {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (InstDecl (GhcPass p)) r where 
-    store (ClsInstD _ d) = definitionContext InstanceDefinition $ store d
+    store (ClsInstD _ d) = storeDefCtx DefInstance $ store d
     store (DataFamInstD _ d) = store d
     store (TyFamInstD _ d) = store d
     store (XInstDecl {}) = return ()
@@ -620,6 +660,9 @@ instance IsGhcPass p r => HaskellAst (ApplicativeArg (GhcPass p)) r where
 instance IsGhcPass p r => HaskellAst (TyClGroup (GhcPass p)) r where
     store (TyClGroup _ tyclds roles insts) = store tyclds >> store roles >> store insts
     store (XTyClGroup {}) = return ()
+
+instance IsGhcPass p r => HaskellAst (HsModule (GhcPass p)) r where
+  store (HsModule _nm _exports _imports decls _ _) = store decls
 
 instance HaskellAst TyThing TypeRecord where
   store (AnId id) = store id

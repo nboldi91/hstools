@@ -16,6 +16,7 @@ import Control.Monad.IO.Class
 
 import GHC
 import GHC.Paths ( libdir )
+import qualified EnumSet as ES
 import Exception
 import DynFlags
 import HscTypes
@@ -150,6 +151,12 @@ test_importedFunction = useTestRepo $ \conn -> do
 -----------------------------------------
 --- technical test cases
 
+test_comments :: Assertion
+test_comments = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "x = ()"] (runGhcTest conn)
+  defs <- getAllDefinitions conn
+  assertEqual [(fromEnum DefSignature, "X.x", 3, 1, 3, 8), (fromEnum DefValue, "X.x", 4, 1, 4, 7)] defs
+
 test_multipleModules :: Assertion
 test_multipleModules = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "import Y", "x = y"] $ withTestFileLines "Y.hs" ["module Y where", "y = ()"] (runGhcTest conn)
@@ -239,6 +246,7 @@ dynFlagsForTest = do
     { ghcLink = NoLink
     , hscTarget = HscNothing
     , pluginModNames = [pluginMod]
+    , generalFlags = ES.insert Opt_KeepRawTokenStream (generalFlags flags) -- use flag -dkeep-comments
     , pluginModNameOpts = [(pluginMod, connectionString)]
     -- , pluginModNameOpts = [(pluginMod, "verbose"), (pluginMod, connectionString)]
     , maxErrors = Just 0

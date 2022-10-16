@@ -7,10 +7,16 @@ import SrcLoc
 
 import Language.Haskell.HsTools.Database
 
+data ParseRecord = ParseDefinitionRecord
+  { prKind :: DefinitionKind
+  , prPos :: NodePos
+  } deriving (Show, Eq)
+
 data NameRecord = NameRecord
   { nmName :: String
   , nmNamespace :: Maybe Namespace
   , nmIsDefined :: Bool
+  , nmDefinitionOf :: Maybe NodePos
   , nmPos :: NodePos
   } deriving (Show, Eq, Ord)
 

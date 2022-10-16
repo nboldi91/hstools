@@ -5,6 +5,7 @@ module Language.Haskell.HsTools.Plugin.Monad where
 import Control.Monad.Reader
 import Control.Monad.Writer
 import Database.PostgreSQL.Simple (Connection)
+import Data.Maybe
 
 import SrcLoc
 
@@ -17,7 +18,7 @@ data StoreContext = StoreContext
   { scModuleName :: String
   , scSpan :: SrcSpan
   , scDefining :: Bool
-  , scDefinition :: DefinitionContext
+  , scDefinitions :: [DefinitionContext]
   , scThSpans :: [NodePos]
   }
 
@@ -27,10 +28,16 @@ defining = local (\l -> l { scDefining = True })
 withSpan :: SrcSpan -> StoreM r a -> StoreM r a
 withSpan span = local (\l -> l { scSpan = span })
 
-definitionContext :: DefinitionContext -> StoreM r a -> StoreM r a
-definitionContext def = local (\l -> l { scDefinition = def })
+definitionContext :: DefinitionKind -> StoreM r a -> StoreM r a
+definitionContext def = local (\l -> l { scDefinitions = DefinitionContext def (scSpan l) : scDefinitions l })
 
-data DefinitionContext = Root | InstanceDefinition
+inInstanceDefinition :: StoreM r Bool
+inInstanceDefinition = asks (any ((== DefInstance) . dcKind) . scDefinitions)
+
+currentDefinition :: StoreM r (Maybe DefinitionContext)
+currentDefinition = asks (listToMaybe . scDefinitions)
+
+data DefinitionContext = DefinitionContext { dcKind :: DefinitionKind, dcSpan :: SrcSpan }
   deriving Eq
 
 defaultStoreContext :: Connection -> Int -> String -> IO StoreContext
@@ -40,6 +47,6 @@ defaultStoreContext conn moduleId moduleName = do
     { scModuleName = moduleName
     , scSpan = noSrcSpan
     , scDefining = False
-    , scDefinition = Root
+    , scDefinitions = []
     , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
     }

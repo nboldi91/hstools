@@ -26,6 +26,7 @@ import Database.PostgreSQL.Simple (Connection)
 import HsDecls
 import HsExpr
 import HsExtension
+import HsSyn
 import SrcLoc
 import TcRnTypes
 import UniqFM
@@ -36,6 +37,41 @@ import Language.Haskell.HsTools.Plugin.Class
 import Language.Haskell.HsTools.Database
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
+
+storeParsed :: StoreParams -> Located (HsModule GhcPs) -> IO ()
+storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
+    context <- defaultStoreContext conn moduleId moduleName
+    ((), defs) <- runWriterT (runReaderT (store md) context)
+    when isVerbose $ do
+      putStrLn "### Storing ast definitions:"
+      mapM_ print defs
+    astIds <- persistAst conn (map convertLocation defs)
+    persistDefinitions conn (map convertDefinition (defs `zip` astIds))
+    -- TODO: persist comments
+  where
+    convertLocation (ParseDefinitionRecord _ (NodePos startRow startColumn endRow endColumn))
+      = (moduleId, startRow, startColumn, endRow, endColumn)
+    convertDefinition ((ParseDefinitionRecord kind _), astId)
+      = (moduleId, astId, fromEnum kind)
+
+storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
+storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
+    context <- defaultStoreContext conn moduleId moduleName
+    ((), names) <- runWriterT (runReaderT (store gr) context)
+    let uniqueNames = nub $ sort names
+    when isVerbose $ do
+      putStrLn "### Storing names:"
+      mapM_ print uniqueNames
+    persistNames conn moduleId uniqueNames
+
+persistNames :: Connection -> Int -> [NameRecord] -> IO ()
+persistNames conn moduleId names = do
+    astIds <- persistAst conn (map convertLocation names)
+    persistName conn (map convertName (names `zip` astIds))
+  where
+    convertName ((NameRecord name namespace isDefined definition _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined, fmap npStartRow definition, fmap npStartCol definition)
+    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
+      = (moduleId, startRow, startColumn, endRow, endColumn)
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
@@ -53,25 +89,6 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
   where
     convertType (TypeRecord name namespace typ) = (name, fmap fromEnum namespace, typ)
 
-storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
-storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
-    context <- defaultStoreContext conn moduleId moduleName
-    ((), names) <- runWriterT (runReaderT (store gr) context)
-    let uniqueNames = nub $ sort names
-    when isVerbose $ do
-      putStrLn "### Storing names:"
-      mapM_ print uniqueNames
-    persistNames conn moduleId uniqueNames
-
-persistNames :: Connection -> Int -> [NameRecord] -> IO ()
-persistNames conn moduleId names = do
-    astIds <- persistAst conn (map convertLocation names)
-    persistName conn (map convertName (names `zip` astIds))
-  where
-    convertName ((NameRecord name namespace isDefined _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined)
-    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
-      = (moduleId, startRow, startColumn, endRow, endColumn)
-
 storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
 storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = do
     context <- defaultStoreContext conn moduleId moduleName
@@ -88,7 +105,7 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
     persistName conn (map convertName (namesAndTypes `zip` astIds))
     persistTypes conn (catMaybes $ map convertType namesAndTypes)
   where
-    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined)
+    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined, Nothing, Nothing)
     convertType (NameAndTypeRecord { ntrName, ntrNamespace, ntrType }) = fmap (ntrName, fmap fromEnum ntrNamespace, ) ntrType
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)

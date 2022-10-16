@@ -17,6 +17,9 @@ data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
 
 data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum, Eq, Ord)
 
+data DefinitionKind = DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
+  deriving (Show, Eq, Enum)
+
 getCompiledTime :: Connection -> FilePath -> IO (Maybe UTCTime)
 getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledTime FROM modules WHERE filePath = ?" (Only filePath)
 
@@ -67,14 +70,20 @@ getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefi
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
 
-persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool)] -> IO ()
-persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined) VALUES (?, ?, ?, ?, ?)" names
+persistDefinitions :: Connection -> [(Int, Int, Int)] -> IO ()
+persistDefinitions conn definitions = void $ executeMany conn "INSERT INTO definitions (module, astNode, definitionKind) VALUES (?, ?, ?)" definitions
+
+persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool, Maybe Int, Maybe Int)] -> IO ()
+persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn) VALUES (?, ?, ?, ?, ?, ?, ?)" names
 
 persistTypes :: Connection -> [(String, Maybe Int, String)] -> IO ()
 persistTypes conn types = void $ executeMany conn "INSERT INTO types (typedName, typeNamespace, type) VALUES (?, ?, ?)" types
 
 persistTHRange' :: Connection -> Int -> Int -> IO ()
 persistTHRange' conn mod astNode = void $ execute conn "INSERT INTO thRanges (module, astNode) VALUES (?, ?)" (mod, astNode)
+
+getAllDefinitions :: Connection -> IO [(Int, String, Int, Int, Int, Int)]
+getAllDefinitions conn = query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn"
 
 getTHRanges :: Connection -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId
@@ -146,6 +155,7 @@ cleanModulesFromDB conn filePath = do
 
 cleanRelatedData :: Connection -> Int -> IO ()
 cleanRelatedData conn moduleId = void $ do
+  execute conn "DELETE FROM definitions WHERE module = ?" [moduleId]
   execute conn "DELETE FROM names WHERE module = ?" [moduleId]
   execute conn "DELETE FROM thRanges WHERE module = ?" [moduleId]
   execute conn "DELETE FROM ast WHERE module = ?" [moduleId]
@@ -168,7 +178,7 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 3
+databaseSchemaVersion = 4
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -209,8 +219,29 @@ databaseSchema = [sql|
     , astNode INT NOT NULL
     , CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
     , isDefined BOOL NOT NULL
+    , namedDefinitionRow INT
+    , namedDefinitionColumn INT
     , name TEXT NOT NULL
     , namespace INT
+    );
+
+  CREATE TABLE definitions 
+    ( definitionId SERIAL PRIMARY KEY
+    , module INT
+    , CONSTRAINT fk_def_module FOREIGN KEY(module) REFERENCES modules(moduleId)
+    , astNode INT
+    , CONSTRAINT fk_def_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    , parentDefinition INT
+    , CONSTRAINT fk_def_parent FOREIGN KEY(parentDefinition) REFERENCES definitions(definitionId)
+    , definitionKind INT NOT NULL
+    );
+
+  CREATE TABLE comments
+    ( module INT
+    , CONSTRAINT fk_comment_module FOREIGN KEY(module) REFERENCES modules(moduleId)
+    , targetDefinition INT
+    , CONSTRAINT fk_comment_def FOREIGN KEY(targetDefinition) REFERENCES definitions(definitionId)
+    , commentText TEXT NOT NULL
     );
 
   CREATE TABLE types 
