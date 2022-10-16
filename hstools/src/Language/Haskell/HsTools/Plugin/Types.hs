@@ -10,7 +10,7 @@ import Language.Haskell.HsTools.Database
 data ParseRecord = ParseDefinitionRecord
   { prKind :: DefinitionKind
   , prPos :: NodePos
-  } deriving (Show, Eq)
+  } deriving (Show, Eq, Ord)
 
 data NameRecord = NameRecord
   { nmName :: String

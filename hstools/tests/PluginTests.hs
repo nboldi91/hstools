@@ -126,6 +126,19 @@ test_typeDef = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (2, 6, Global "X.MyString", "*", Definition)
   gsubAssert $ assertHasNameNoType names (2, 17, Global "GHC.Base.String", Use) -- TODO: kind should be *
 
+test_fullDataType :: Assertion
+test_fullDataType = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "data A a = B a a | C { x :: a }"] (runGhcTest conn)
+  defs <- getAllDefinitions conn
+  assertEqual
+    [ (DefTypeDecl, Just "X.A", 2, 1, 2, 32)
+    , (DefConstructor, Just "X.B", 2, 12, 2, 17)
+    , (DefCtorArg, Nothing, 2, 14, 2, 15)
+    , (DefCtorArg, Nothing, 2, 16, 2, 17)
+    , (DefConstructor, Just "X.C", 2, 20, 2, 32)
+    , (DefCtorArg, Just "X.x", 2, 24, 2, 25)
+    ] defs
+
 test_openTypeFamily :: Assertion
 test_openTypeFamily = useTestRepo $ \conn -> do
   withTestFileLines testFile ["{-# LANGUAGE TypeFamilies #-}", "module X where", "type family Not a"] (runGhcTest conn)
@@ -157,8 +170,8 @@ test_comments = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "-- ^ another comment for x", "x = ()"] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (fromEnum DefSignature, Just "X.x", 3, 1, 3, 8)
-    , (fromEnum DefValue, Just "X.x", 5, 1, 5, 7)
+    [ (DefSignature, Just "X.x", 3, 1, 3, 8)
+    , (DefValue, Just "X.x", 5, 1, 5, 7)
     ] defs
   comments <- getAllComments conn
   assertEqual [(3, 1, "-- ^ another comment for x"), (3, 1, "-- | comment for x")] comments
@@ -168,11 +181,11 @@ test_commentsInLineOnArgs = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "f :: String {-^ arg1 -} -> {-| arg2 -} Int -> String {-^ result -}", "f \"\" _ = \"\""] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (fromEnum DefSignature, Just "X.f", 2, 1, 2, 53)
-    , (fromEnum DefParameter, Nothing, 2, 6, 2, 12)
-    , (fromEnum DefParameter, Nothing, 2, 40, 2, 43)
-    , (fromEnum DefParameter, Nothing, 2, 47, 2, 53)
-    , (fromEnum DefValue, Just "X.f", 3, 1, 3, 12)
+    [ (DefSignature, Just "X.f", 2, 1, 2, 53)
+    , (DefParameter, Nothing, 2, 6, 2, 12)
+    , (DefParameter, Nothing, 2, 40, 2, 43)
+    , (DefParameter, Nothing, 2, 47, 2, 53)
+    , (DefValue, Just "X.f", 3, 1, 3, 12)
     ] defs
   comments <- getAllComments conn
   assertEqual

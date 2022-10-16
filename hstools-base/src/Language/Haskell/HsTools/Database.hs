@@ -18,9 +18,9 @@ data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
 data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum, Eq, Ord)
 
 data DefinitionKind
-  = DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
-  | DefParameter
-  deriving (Show, Eq, Enum)
+  = DefModule | DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
+  | DefParameter | DefTypeDecl | DefConstructor | DefCtorArg
+  deriving (Show, Eq, Ord, Enum)
 
 isSignatureDef :: DefinitionKind -> Bool
 isSignatureDef DefSignature = True
@@ -77,11 +77,11 @@ getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefi
 persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
 
-persistDefinitions :: Connection -> [(Int, Int, Int)] -> IO [Int]
-persistDefinitions conn definitions = fmap head <$> returning conn "INSERT INTO definitions (module, astNode, definitionKind) VALUES (?, ?, ?) RETURNING definitionId" definitions
+persistDefinitions :: Connection -> [(Int, Int, DefinitionKind)] -> IO [Int]
+persistDefinitions conn definitions = fmap head <$> returning conn "INSERT INTO definitions (module, astNode, definitionKind) VALUES (?, ?, ?) RETURNING definitionId" (map (\(a,b,c) -> (a,b, fromEnum c)) definitions)
 
-persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool, Maybe Int, Maybe Int)] -> IO ()
-persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn) VALUES (?, ?, ?, ?, ?, ?, ?)" names
+persistName :: Connection -> [(Int, Int, String, Maybe Int, Bool, Maybe Int, Maybe Int, Maybe Int, Maybe Int)] -> IO ()
+persistName conn names = void $ executeMany conn "INSERT INTO names (module, astNode, name, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)" names
 
 persistTypes :: Connection -> [(String, Maybe Int, String)] -> IO ()
 persistTypes conn types = void $ executeMany conn "INSERT INTO types (typedName, typeNamespace, type) VALUES (?, ?, ?)" types
@@ -95,8 +95,8 @@ persistComments conn comments = void $ executeMany conn "INSERT INTO comments (m
 getAllComments :: Connection -> IO [(Int, Int, String)]
 getAllComments conn = query_ conn "SELECT startRow, startColumn, commentText FROM ast a JOIN comments c ON c.targetDefinition = a.astId ORDER BY startRow, startColumn"
 
-getAllDefinitions :: Connection -> IO [(Int, Maybe String, Int, Int, Int, Int)]
-getAllDefinitions conn = query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn"
+getAllDefinitions :: Connection -> IO [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
+getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn AND a.endRow = n.namedDefinitionEndRow AND a.endColumn = n.namedDefinitionEndColumn ORDER BY startRow, startColumn"
 
 getTHRanges :: Connection -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId
@@ -235,6 +235,8 @@ databaseSchema = [sql|
     , isDefined BOOL NOT NULL
     , namedDefinitionRow INT
     , namedDefinitionColumn INT
+    , namedDefinitionEndRow INT
+    , namedDefinitionEndColumn INT
     , name TEXT NOT NULL
     , namespace INT
     );

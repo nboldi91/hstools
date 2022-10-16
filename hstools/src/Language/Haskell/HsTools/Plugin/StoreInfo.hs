@@ -44,17 +44,17 @@ storeParsed :: StoreParams -> HsParsedModule -> IO ()
 storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
     context <- defaultStoreContext conn moduleId moduleName
     ((), defs) <- runWriterT (runReaderT (store $ hpm_module md) context)
+    let sortedDefs = nub $ sort defs
     when isVerbose $ do
       putStrLn "### Storing ast definitions:"
-      mapM_ print defs
-    astIds <- persistAst conn (map convertLocation defs)
-    defIds <- persistDefinitions conn (map convertDefinition $ defs `zip` astIds)
-    persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (defs `zip` defIds)
+      mapM_ print sortedDefs
+    astIds <- persistAst conn (map convertLocation sortedDefs)
+    defIds <- persistDefinitions conn (map convertDefinition $ sortedDefs `zip` astIds)
+    persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (sortedDefs `zip` defIds)
   where
     convertLocation (ParseDefinitionRecord _ (NodePos startRow startColumn endRow endColumn))
       = (moduleId, startRow, startColumn, endRow, endColumn)
-    convertDefinition ((ParseDefinitionRecord kind _), astId)
-      = (moduleId, astId, fromEnum kind)
+    convertDefinition ((ParseDefinitionRecord kind _), astId) = (moduleId, astId, kind)
 
 findDefinitionOfComments :: Int -> Map.Map SrcSpan [Located AnnotationComment] -> [(ParseRecord, Int)] -> [(Int, Int, String)]
 findDefinitionOfComments moduleId commMap records =
@@ -99,9 +99,10 @@ persistNames conn moduleId names = do
     astIds <- persistAst conn (map convertLocation names)
     persistName conn (map convertName (names `zip` astIds))
   where
-    convertName ((NameRecord name namespace isDefined definition _), id) = (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined, fmap npStartRow definition, fmap npStartCol definition)
-    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn })
-      = (moduleId, startRow, startColumn, endRow, endColumn)
+    convertName ((NameRecord name namespace isDefined definition _), id) =
+      (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
+    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn }) =
+      (moduleId, startRow, startColumn, endRow, endColumn)
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
@@ -135,7 +136,7 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
     persistName conn (map convertName (namesAndTypes `zip` astIds))
     persistTypes conn (catMaybes $ map convertType namesAndTypes)
   where
-    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined, Nothing, Nothing)
+    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined, Nothing, Nothing, Nothing, Nothing)
     convertType (NameAndTypeRecord { ntrName, ntrNamespace, ntrType }) = fmap (ntrName, fmap fromEnum ntrNamespace, ) ntrType
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
