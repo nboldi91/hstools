@@ -114,10 +114,11 @@ handlers = mconcat
             names <- liftIO $ getHoverInfo conn file lineNum columnNum
             case names of
               [] -> liftLSP $ responder (Right Nothing)  
-              (typ, isDefined, name, startLine, startColumn, endLine, endColumn):_ -> 
+              (typ, isDefined, name, startLine, startColumn, endLine, endColumn, commentText):_ -> 
                 let ms = HoverContents $ markedUpContent "hstools" $ T.pack
                             $ name ++ (if isDefined == True then " defined here" else "")
                                 ++ (maybe "" ("\n  :: " ++) typ)
+                                ++ (maybe "" ("\n" ++) commentText)
                     origRange = SP.Range (SP startLine startColumn) (SP endLine endColumn)
                     newRange = originalToNewRangeStrict rewrites origRange
                     rsp = Hover ms (fmap rangeToLSP newRange)

@@ -56,7 +56,8 @@ connectionDBName = "lsptestrepo"
 serverConfig :: A.Value
 serverConfig = A.Object (A.singleton "hstools" $ A.Object (A.singleton "postgresqlConnectionString" $ A.String (T.pack connectionString)))
 
-useTestRepo = withTestRepo connectionStringWithoutDB connectionDBName
+useTestRepo test = withTestRepo connectionStringWithoutDB connectionDBName (\conn -> test conn `finally` printErrors conn)
+  where printErrors conn = getErrors conn >>= mapM_ print 
 
 test_simpleGotoDefinition :: IO ()
 test_simpleGotoDefinition = useTestRepo $ \conn -> do
@@ -85,7 +86,7 @@ test_hovering = useTestRepo $ \conn -> do
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     hover <- getHover doc (Position 0 5)
-    assertEqual (Just (Hover (HoverContents $ MarkupContent MkMarkdown "\n```hstools\ny\n  :: ()\n```\n") $ Just $ LSP.Range (Position 0 4) (Position 0 5))) hover
+    assertEqual (Just (Hover (HoverContents $ MarkupContent MkMarkdown "\n```hstools\ny\n  :: ()\n-- ^ comment for y\n```\n") $ Just $ LSP.Range (Position 0 4) (Position 0 5))) hover
 
 -- file changed during session in an open editor
 test_rewriteInEditor :: IO ()
@@ -157,7 +158,7 @@ setupSimpleTestFile :: Connection -> IO (FilePath, T.Text)
 setupSimpleTestFile conn = do
   let fileName = testFilePrefix ++ "/X.hs"
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
-  let content = unlines ["x = y", "y = ()"]
+  let content = unlines ["x = y", "y = ()", "-- ^ comment for y"]
   time <- getCurrentTime
   mi <- insertModule conn fullFilePath time "X" "test" content
   asts <- persistAst conn
@@ -167,10 +168,11 @@ setupSimpleTestFile conn = do
     , (mi, 1, 1, 1, 6)
     , (mi, 2, 1, 2, 7)
     ]
-  persistDefinitions conn
+  defs <- persistDefinitions conn
     [ (mi, asts !! 3, DefValue)
     , (mi, asts !! 4, DefValue)
-    ] 
+    ]
+  persistComments conn [ (mi, defs !! 1, "-- ^ comment for y") ]
   persistName conn 
     [ (mi, asts !! 0, "x", vnms, True, Just 1, Just 1, Just 1, Just 6)
     , (mi, asts !! 1, "y", vnms, False, Nothing, Nothing, Nothing, Nothing)

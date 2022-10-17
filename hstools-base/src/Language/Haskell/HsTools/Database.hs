@@ -132,16 +132,21 @@ getMatchingNames conn file row col onlyDefinitions
       |] `mappend` (fromString $ maybe "" ((" AND dn.isDefined = " ++) . show) onlyDefinitions))
       (file, row, row, col, col)
 
-getHoverInfo :: Connection -> FilePath -> Int -> Int -> IO [(Maybe String, Bool, String, Int, Int, Int, Int)]
+getHoverInfo :: Connection -> FilePath -> Int -> Int -> IO [(Maybe String, Bool, String, Int, Int, Int, Int, Maybe String)]
 getHoverInfo conn file row col =
   query
     conn
     [sql| 
-      SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn
+      SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn, c.commentText
         FROM ast n
         JOIN names nn ON nn.astNode = n.astId
         JOIN modules nm ON n.module = nm.moduleId
         LEFT JOIN types tn ON nn.name = tn.typedName AND nn.namespace = tn.typeNamespace
+        LEFT JOIN names dn ON nn.name = dn.name AND dn.isDefined = true
+        LEFT JOIN ast da ON dn.namedDefinitionRow = da.startRow AND dn.namedDefinitionColumn = da.startColumn 
+          AND dn.namedDefinitionEndRow = da.endRow AND dn.namedDefinitionEndColumn = da.endColumn
+        LEFT JOIN definitions d ON d.astNode = da.astId
+        LEFT JOIN comments c ON c.targetDefinition = d.definitionId
         WHERE nm.filePath = ? AND n.startRow <= ? AND n.endRow >= ? AND n.startColumn <= ? AND n.endColumn >= ?
     |]
     (file, row, row, col, col)
