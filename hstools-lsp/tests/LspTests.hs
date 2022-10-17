@@ -160,14 +160,26 @@ setupSimpleTestFile conn = do
   let content = unlines ["x = y", "y = ()"]
   time <- getCurrentTime
   mi <- insertModule conn fullFilePath time "X" "test" content
-  asts <- persistAst conn [(mi, 1, 1, 1, 2), (mi, 1, 5, 1, 6), (mi, 2, 1, 2, 2), (mi, 1, 1, 1, 6), (mi, 2, 1, 2, 7)]
-  persistDefinitions conn [(mi, asts !! 3, fromEnum DefValue), (mi, asts !! 4, fromEnum DefValue)] 
-  persistName conn 
-    [ (mi, asts !! 0, "x", vnms, True, Just 1, Just 1)
-    , (mi, asts !! 1, "y", vnms, False, Nothing, Nothing)
-    , (mi, asts !! 2, "y", vnms, True, Just 2, Just 1)
+  asts <- persistAst conn
+    [ (mi, 1, 1, 1, 2)
+    , (mi, 1, 5, 1, 6)
+    , (mi, 2, 1, 2, 2)
+    , (mi, 1, 1, 1, 6)
+    , (mi, 2, 1, 2, 7)
     ]
-  persistTypes conn [("x", vnms, "()"), ("y", vnms, "()")]
+  persistDefinitions conn
+    [ (mi, asts !! 3, DefValue)
+    , (mi, asts !! 4, DefValue)
+    ] 
+  persistName conn 
+    [ (mi, asts !! 0, "x", vnms, True, Just 1, Just 1, Just 1, Just 6)
+    , (mi, asts !! 1, "y", vnms, False, Nothing, Nothing, Nothing, Nothing)
+    , (mi, asts !! 2, "y", vnms, True, Just 2, Just 1, Just 2, Just 7)
+    ]
+  persistTypes conn
+    [ ("x", vnms, "()")
+    , ("y", vnms, "()")
+    ]
   return (fileName, T.pack content)
 
 setupAnotherTestFile :: Connection -> IO (FilePath, T.Text)
@@ -177,12 +189,19 @@ setupAnotherTestFile conn = do
   let content = unlines ["import X", "z = x"]
   time <- getCurrentTime
   mi <- insertModule conn fullFilePath time "X" "test" content
-  asts <- persistAst conn [(mi, 2, 1, 2, 2), (mi, 2, 5, 2, 6), (mi, 2, 1, 2, 6)]
-  persistName conn
-    [ (mi, asts !! 0, "z", vnms, True, Just 2, Just 1)
-    , (mi, asts !! 1, "x", vnms, False, Nothing, Nothing)
+  asts <- persistAst conn
+    [ (mi, 2, 1, 2, 2)
+    , (mi, 2, 5, 2, 6)
+    , (mi, 2, 1, 2, 6)
     ]
-  persistTypes conn [("x", vnms, "()"), ("z", vnms, "()")]
+  persistName conn
+    [ (mi, asts !! 0, "z", vnms, True, Just 2, Just 1, Just 2, Just 6)
+    , (mi, asts !! 1, "x", vnms, False, Nothing, Nothing, Nothing, Nothing)
+    ]
+  persistTypes conn
+    [ ("x", vnms, "()")
+    , ("z", vnms, "()")
+    ]
   return (fileName, T.pack content)
 
 -- value namespace
