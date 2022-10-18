@@ -29,7 +29,8 @@ library:
     - Language.Haskell.HsTools.Plugin.Plugin
     - Language.Haskell.HsTools.Plugin.StoreInfo
     - Language.Haskell.HsTools.Plugin.Monad
-    - Language.Haskell.HsTools.Plugin.Class
+    - Language.Haskell.HsTools.Plugin.Storable
+    - Language.Haskell.HsTools.Plugin.StorableInstances
     - Language.Haskell.HsTools.Plugin.Types
   dependencies:
     - hstools-base

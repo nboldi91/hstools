@@ -35,7 +35,8 @@ import UniqFM
 
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
-import Language.Haskell.HsTools.Plugin.Class
+import Language.Haskell.HsTools.Plugin.Storable
+import Language.Haskell.HsTools.Plugin.StorableInstances ()
 import Language.Haskell.HsTools.Database
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
