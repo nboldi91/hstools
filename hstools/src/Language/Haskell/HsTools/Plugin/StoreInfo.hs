@@ -42,8 +42,11 @@ import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
 
 storeParsed :: StoreParams -> HsParsedModule -> IO ()
 storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
-    context <- defaultStoreContext conn moduleId moduleName
-    ((), defs) <- runWriterT (runReaderT (store $ hpm_module md) context)
+    let modEnd = listToMaybe =<< Map.lookup (noSrcSpan, AnnEofPos) (fst $ hpm_annotations md)
+        modSpan = maybe id combineSrcSpans modEnd $ getLoc $ hpm_module md
+        storeModule = storeLoc store (L modSpan (unLoc $ hpm_module md))
+    context <- defaultStoreContext conn moduleId moduleName (Just modSpan)
+    ((), defs) <- runWriterT (runReaderT storeModule context)
     let sortedDefs = nub $ sort defs
     when isVerbose $ do
       putStrLn "### Storing ast definitions:"
@@ -86,7 +89,7 @@ getAnnString (AnnBlockComment str) = str
 
 storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
-    context <- defaultStoreContext conn moduleId moduleName
+    context <- defaultStoreContext conn moduleId moduleName Nothing
     ((), names) <- runWriterT (runReaderT (store gr) context)
     let uniqueNames = nub $ sort names
     when isVerbose $ do
@@ -106,7 +109,7 @@ persistNames conn moduleId names = do
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    context <- defaultStoreContext conn moduleId moduleName
+    context <- defaultStoreContext conn moduleId moduleName Nothing
     -- putStrLn $ show $ tcg_binds env
     let storeEnv = do
           store $ tcg_binds env
@@ -122,7 +125,7 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
 
 storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
 storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = do
-    context <- defaultStoreContext conn moduleId moduleName
+    context <- defaultStoreContext conn moduleId moduleName Nothing
     ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
     when isVerbose $ do
       putStrLn "### Storing names and types for TH:"

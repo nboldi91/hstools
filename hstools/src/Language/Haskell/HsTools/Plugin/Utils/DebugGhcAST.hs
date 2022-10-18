@@ -23,6 +23,7 @@ import RdrName (RdrName(..))
 import TcEvidence
 import UniqFM (UniqFM)
 import UniqSet (UniqSet)
+import HscTypes
 
 instance Show a => Show (Located a) where
   show (L l a) = "L(" ++ shortShowSpan l ++ ") (" ++ show a ++ ")"
@@ -403,3 +404,5 @@ instance Show a => Show (Bag a) where
 
 instance Show ThModFinalizers where
   show _ = ""
+
+deriving instance Show HsParsedModule

@@ -688,7 +688,7 @@ instance IsGhcPass p r => HaskellAst (TyClGroup (GhcPass p)) r where
     store (XTyClGroup {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsModule (GhcPass p)) r where
-  store (HsModule _nm _exports _imports decls _ _) = store decls
+  store (HsModule _nm _exports _imports decls _ _) = storeDefCtx DefModule $ store decls
 
 instance HaskellAst TyThing TypeRecord where
   store (AnId id) = store id

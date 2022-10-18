@@ -53,14 +53,14 @@ currentDefinition = asks (listToMaybe . scDefinitions)
 data DefinitionContext = DefinitionContext { dcKind :: DefinitionKind, dcSpan :: SrcSpan }
   deriving Eq
 
-defaultStoreContext :: Connection -> Int -> String -> IO (StoreContext r)
-defaultStoreContext conn moduleId moduleName = do
+defaultStoreContext :: Connection -> Int -> String -> Maybe SrcSpan -> IO (StoreContext r)
+defaultStoreContext conn moduleId moduleName modSpan = do
   thSpans <- getTHRanges conn moduleId
   return $ StoreContext
     { scModuleName = moduleName
     , scSpan = noSrcSpan
     , scDefining = False
-    , scDefinitions = []
+    , scDefinitions = maybe [] (\ms -> [DefinitionContext DefModule ms]) modSpan
     , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
     , scLocalUnderLoc = id
     , scInsideDefinition = False

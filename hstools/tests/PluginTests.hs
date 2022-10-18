@@ -131,7 +131,8 @@ test_fullDataType = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "data A a = B a a | C { x :: a }"] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefTypeDecl, Just "X.A", 2, 1, 2, 32)
+    [ (DefModule, Nothing, 1, 1, 3, 1)
+    , (DefTypeDecl, Just "X.A", 2, 1, 2, 32)
     , (DefConstructor, Just "X.B", 2, 12, 2, 17)
     , (DefCtorArg, Nothing, 2, 14, 2, 15)
     , (DefCtorArg, Nothing, 2, 16, 2, 17)
@@ -170,7 +171,8 @@ test_comments = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "-- ^ another comment for x", "x = ()"] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefSignature, Just "X.x", 3, 1, 3, 8)
+    [ (DefModule, Nothing, 1, 1, 6, 1)
+    , (DefSignature, Just "X.x", 3, 1, 3, 8)
     , (DefValue, Just "X.x", 5, 1, 5, 7)
     ] defs
   comments <- getAllComments conn
@@ -181,7 +183,8 @@ test_commentsInLineOnArgs = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "f :: String {-^ arg1 -} -> {-| arg2 -} Int -> String {-^ result -}", "f \"\" _ = \"\""] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefSignature, Just "X.f", 2, 1, 2, 53)
+    [ (DefModule, Nothing, 1, 1, 4, 1)
+    , (DefSignature, Just "X.f", 2, 1, 2, 53)
     , (DefParameter, Nothing, 2, 6, 2, 12)
     , (DefParameter, Nothing, 2, 40, 2, 43)
     , (DefParameter, Nothing, 2, 47, 2, 53)

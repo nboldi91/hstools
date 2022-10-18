@@ -167,12 +167,14 @@ setupSimpleTestFile conn = do
     , (mi, 2, 1, 2, 2)
     , (mi, 1, 1, 1, 6)
     , (mi, 2, 1, 2, 7)
+    , (mi, 1, 1, 3, 1)
     ]
   defs <- persistDefinitions conn
-    [ (mi, asts !! 3, DefValue)
+    [ (mi, asts !! 5, DefModule)
+    , (mi, asts !! 3, DefValue)
     , (mi, asts !! 4, DefValue)
     ]
-  persistComments conn [ (mi, defs !! 1, "-- ^ comment for y") ]
+  persistComments conn [ (mi, defs !! 2, "-- ^ comment for y") ]
   persistName conn 
     [ (mi, asts !! 0, "x", vnms, True, Just 1, Just 1, Just 1, Just 6)
     , (mi, asts !! 1, "y", vnms, False, Nothing, Nothing, Nothing, Nothing)
