@@ -39,20 +39,24 @@ import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
 
-type IsGhcPass p r =
-  ( HaskellAst Name r -- skip
-  , HaskellAst Id r -- skip
-  , HaskellAst TypedName r
+type StorablePass p r =
+  ( Storable (IdP (GhcPass p)) r
+  , Storable (XExprWithTySig (GhcPass p)) r
+  , Storable (XSigPat (GhcPass p)) r
+  , Storable (XCFieldOcc (GhcPass p)) r
+  , Storable (XUnambiguous (GhcPass p)) r
+  , Storable (XAppTypeE (GhcPass p)) r
+  , Storable (XCFieldOcc (GhcPass p)) r
+  , Storable (NameOrRdrName (IdP (GhcPass p))) r
+  , StoreMode r
+  )
+
+type StoreMode r =
+  ( Storable Name r
+  , Storable Id r
+  , Storable TypedName r
+  , Storable ModuleName r
   , CanStoreDefinition r
-  , HaskellAst (IdP (GhcPass p)) r
-  , HaskellAst ModuleName r
-  , HaskellAst (XExprWithTySig (GhcPass p)) r
-  , HaskellAst (XSigPat (GhcPass p)) r
-  , HaskellAst (XCFieldOcc (GhcPass p)) r
-  , HaskellAst (XUnambiguous (GhcPass p)) r
-  , HaskellAst (XAppTypeE (GhcPass p)) r
-  , HaskellAst (XCFieldOcc (GhcPass p)) r
-  , HaskellAst (NameOrRdrName (IdP (GhcPass p))) r
   )
 
 data TypedName = TN { tnName :: Name, tnType :: Type }
@@ -107,13 +111,13 @@ storeDefCtx DefParameter st = do
     _ -> st
 storeDefCtx k st = storeDefinition k >> definitionContext k st
 
-class HaskellAst a r where
+class Storable a r where
     store :: a -> StoreM r ()
 
-instance HaskellAst RdrName ParseRecord where
+instance Storable RdrName ParseRecord where
   store _ = return ()
 
-instance HaskellAst Name NameRecord where
+instance Storable Name NameRecord where
   store id = asks scSpan >>= \case
     RealSrcSpan span -> do
       currentModuleName <- asks scModuleName
@@ -129,18 +133,18 @@ instance HaskellAst Name NameRecord where
       tell [storedName] 
     _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
 
-instance HaskellAst TypedName ParseRecord where
+instance Storable TypedName ParseRecord where
   store _ = return ()
 
-instance HaskellAst TypedName TypeRecord where
+instance Storable TypedName TypeRecord where
   store (TN name typ) = do
     currentModuleName <- asks scModuleName
     tell [ nameTypeToTypeRecord currentModuleName name typ ]
 
-instance HaskellAst TypedName NameRecord where
+instance Storable TypedName NameRecord where
   store (TN name _) = store name
 
-instance HaskellAst TypedName NameAndTypeRecord where
+instance Storable TypedName NameAndTypeRecord where
   store (TN name typ) = do 
     span <- asks scSpan
     case srcSpanToNodePos span of
@@ -162,25 +166,25 @@ instance HaskellAst TypedName NameAndTypeRecord where
         tell [record] 
       Nothing -> return ()
   
-instance HaskellAst Name ParseRecord where
+instance Storable Name ParseRecord where
   store _ = return ()
 
-instance HaskellAst Name TypeRecord where
+instance Storable Name TypeRecord where
   store _ = return ()
 
-instance HaskellAst Id ParseRecord where
+instance Storable Id ParseRecord where
   store _ = return ()
 
-instance HaskellAst Id NameRecord where
+instance Storable Id NameRecord where
   store = store . getTypedName
 
-instance HaskellAst Id TypeRecord where
+instance Storable Id TypeRecord where
   store id =
     store $ case idDetails id of
       DataConWorkId dc -> getTypedName dc
       _ -> getTypedName id
 
-instance HaskellAst Id NameAndTypeRecord where
+instance Storable Id NameAndTypeRecord where
   store id =
     store $ case idDetails id of
       DataConWorkId dc -> getTypedName dc
@@ -198,7 +202,7 @@ generateFullName currentModuleName name = case nameModule_maybe name of
   (Just mn) -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name)
   Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
 
-instance HaskellAst Name NameAndTypeRecord where
+instance Storable Name NameAndTypeRecord where
   store id = currentPos $ \np -> do
     currentModuleName <- asks scModuleName
     defined <- asks scDefining
@@ -215,13 +219,13 @@ instance HaskellAst Name NameAndTypeRecord where
             }
     tell [record] 
 
-instance HaskellAst Type r where
+instance Storable Type r where
   store _ = return ()
 
-instance HaskellAst NoExt r where
+instance Storable NoExt r where
   store _ = return ()
 
-instance HaskellAst a r => HaskellAst (Located a) r where
+instance Storable a r => Storable (Located a) r where
   store = storeLoc store
 
 storeLoc :: (a -> StoreM r ()) -> Located a -> StoreM r ()
@@ -231,30 +235,30 @@ storeLoc st (L span ast) = {- trace ("##L: " ++ show span) $ -} do
               Nothing -> return False
   when (not thSpan) $ (if isGoodSrcSpan span then withSpan span . applyContext else id) $ st ast
 
-instance HaskellAst a r => HaskellAst [a] r where
+instance Storable a r => Storable [a] r where
     store = mapM_ store
 
-instance HaskellAst a r => HaskellAst (Bag a) r where
+instance Storable a r => Storable (Bag a) r where
     store = mapBagM_ store
 
-instance HaskellAst a r => HaskellAst (Maybe a) r where
+instance Storable a r => Storable (Maybe a) r where
     store (Just a) = store a
     store Nothing = return ()
 
-instance (HaskellAst a r, HaskellAst b r) => HaskellAst (a, b) r where
+instance (Storable a r, Storable b r) => Storable (a, b) r where
     store (a, b) = store a >> store b
 
-instance HaskellAst a r => HaskellAst (HsWildCardBndrs (GhcPass p) a) r where
+instance Storable a r => Storable (HsWildCardBndrs (GhcPass p) a) r where
     store = store . hswc_body
 
-instance HaskellAst a r => HaskellAst (HsImplicitBndrs (GhcPass p) a) r where
+instance Storable a r => Storable (HsImplicitBndrs (GhcPass p) a) r where
     store = store . hsib_body
 
-instance IsGhcPass p r => HaskellAst (HsValBinds (GhcPass p)) r where
+instance StorablePass p r => Storable (HsValBinds (GhcPass p)) r where
     store (ValBinds _ binds sigs) = store sigs >> store binds
     store (XValBindsLR (NValBinds binds sigs)) = store sigs >> store (map snd binds)
 
-instance IsGhcPass p r => HaskellAst (Sig (GhcPass p)) r where
+instance StorablePass p r => Storable (Sig (GhcPass p)) r where
     store (TypeSig _ ids types) = storeDefCtx DefSignature $ defining (store ids) >> store types
     store (PatSynSig _ ids types) = storeDefCtx DefPatternSynonym $ defining (store ids) >> store types
     store (ClassOpSig _ _ ids types) = storeDefCtx DefClassOpSignature $ defining (store ids) >> store types
@@ -268,7 +272,7 @@ instance IsGhcPass p r => HaskellAst (Sig (GhcPass p)) r where
     store (CompleteMatchSig _ _ ids maybeIds) = store ids >> mapM_ store maybeIds
     store (XSig {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsType (GhcPass p)) r where
+instance StorablePass p r => Storable (HsType (GhcPass p)) r where
   store t
     | Just ls <- splitHsFunTys t
     = mapM_ (storeLoc $ storeDefCtx DefParameter . store) ls
@@ -304,14 +308,14 @@ splitHsFunTys' :: LHsType p -> [LHsType p]
 splitHsFunTys' (unLoc -> HsFunTy _ t1 t2) = t1 : splitHsFunTys' t2
 splitHsFunTys' t = [t]
 
-instance IsGhcPass p r => HaskellAst (HsTyVarBndr (GhcPass p)) r where
+instance StorablePass p r => Storable (HsTyVarBndr (GhcPass p)) r where
     store (UserTyVar _ id) = defining $ store id
     store (KindedTyVar _ id kind) = do
         defining $ store id
         store kind -- kinds are just types
     store (XTyVarBndr _) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
+instance StorablePass p r => Storable (HsBindLR (GhcPass p) (GhcPass p)) r where
     store (FunBind _ funId matches _ _) = storeDefCtx DefValue $ defining (store funId) >> insideDefinition (store matches)
     store (PatBind _ lhs rhs _) = storeDefCtx DefValue $ store lhs >> insideDefinition (store rhs)
     store (VarBind _ id rhs _) = storeDefCtx DefValue $ do
@@ -322,35 +326,35 @@ instance IsGhcPass p r => HaskellAst (HsBindLR (GhcPass p) (GhcPass p)) r where
     store (PatSynBind _ bind) = storeDefCtx DefPatternSynonym $ store bind
     store (XHsBindsLR {}) = return ()
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (MatchGroup (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (MatchGroup (GhcPass p) a) r where 
     store (MG _ alts _) = store alts
     store (XMatchGroup {}) = return ()
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (Match (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (Match (GhcPass p) a) r where 
     store (Match _ ctx pats grhss) = store ctx >> store pats >> store grhss
     store (XMatch {}) = return ()
 
-instance (HaskellAst a r) => HaskellAst (HsMatchContext a) r where 
+instance (Storable a r) => Storable (HsMatchContext a) r where 
   store (FunRhs id _ _) = do
     isInstanceDefinition <- inInstanceDefinition
     if isInstanceDefinition then store id else defining $ store id
   store _ = return () -- all the other cases are unrelevant
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (GRHSs (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (GRHSs (GhcPass p) a) r where 
     store (GRHSs _ grhs localBinds) = store grhs >> store localBinds
     store (XGRHSs {}) = return ()
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (GRHS (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (GRHS (GhcPass p) a) r where 
     store (GRHS _ guards body) = store guards >> store body
     store (XGRHS {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsLocalBinds (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsLocalBinds (GhcPass p)) r where 
     store (HsValBinds _ binds) = storeDefCtx DefValue $ store binds
     store (HsIPBinds {}) = return () -- implicit parameters
     store (EmptyLocalBinds {}) = return ()
     store (XHsLocalBindsLR {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsExpr (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsExpr (GhcPass p)) r where 
     store (HsVar _ id) = store id
     store (HsUnboundVar {}) = return () -- hole or naming error
     store (HsConLikeOut _ conLike) = store (conLikeWrapId_maybe conLike)
@@ -400,19 +404,19 @@ instance IsGhcPass p r => HaskellAst (HsExpr (GhcPass p)) r where
     store (HsWrap _ _ e) = store e
     store (XExpr {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsSplice (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsSplice (GhcPass p)) r where 
     store (HsTypedSplice _ _ _ e) = store e
     store (HsUntypedSplice _ _ _ e) = store e
     store (HsQuasiQuote _ n1 n2 _ _) = store n1 >> store n2
     store (HsSpliced _ _ spliced) = store spliced
     store (XSplice {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsSplicedThing (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsSplicedThing (GhcPass p)) r where 
     store (HsSplicedExpr e) = store e
     store (HsSplicedTy t) = store t
     store (HsSplicedPat p) = store p
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (StmtLR (GhcPass p) (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (StmtLR (GhcPass p) (GhcPass p) a) r where 
     store (LastStmt _ e _ _) = store e
     store (BindStmt _ p e _ _) = store p >> store e
     store (ApplicativeStmt _ arg _) = store (map snd arg)
@@ -424,7 +428,7 @@ instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (StmtLR (GhcPass p) (GhcP
     store (RecStmt _ st n1 n2 _ _ _) = store st >> store n1 >> store n2
     store (XStmtLR {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (Pat (GhcPass p)) r where 
+instance StorablePass p r => Storable (Pat (GhcPass p)) r where 
     store (WildPat {}) = return ()
     store (VarPat _ id) = defining $ store id
     store (LazyPat _ pat) = store pat
@@ -445,61 +449,61 @@ instance IsGhcPass p r => HaskellAst (Pat (GhcPass p)) r where
     store (CoPat _ _ p _) = store p
     store (XPat {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsTupArg (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsTupArg (GhcPass p)) r where 
     store (Present _ e) = store e
     store (Missing {}) = return ()
     store (XTupArg {}) = return ()
 
-instance (CanStoreDefinition r, HaskellAst a r, HaskellAst b r) => HaskellAst (HsConDetails a b) r where 
+instance (CanStoreDefinition r, Storable a r, Storable b r) => Storable (HsConDetails a b) r where 
   store (PrefixCon args) = pushDownContext (storeDefCtx DefCtorArg) (store args)
   store (RecCon r) = store r
   store (InfixCon a1 a2) =
     pushDownContext (storeDefCtx DefCtorArg) (store a1) 
       >> pushDownContext (storeDefCtx DefCtorArg) (store a2)
 
-instance IsGhcPass p r => HaskellAst (PatSynBind (GhcPass p) (GhcPass p)) r where 
+instance StorablePass p r => Storable (PatSynBind (GhcPass p) (GhcPass p)) r where 
     store (PSB _ id args rhs _) = defining (store id) >> store args >> store rhs
     store (XPatSynBind {}) = return ()
 
-instance HaskellAst a r => HaskellAst (RecordPatSynField a) r where 
+instance Storable a r => Storable (RecordPatSynField a) r where 
     store (RecordPatSynField selector var) = defining (store selector) >> defining (store var)
 
-instance IsGhcPass p r => HaskellAst (FixitySig (GhcPass p)) r where 
+instance StorablePass p r => Storable (FixitySig (GhcPass p)) r where 
     store (FixitySig _ ids _) = store ids
     store (XFixitySig {}) = return ()
 
-instance HaskellAst a r => HaskellAst (BooleanFormula a) r where
+instance Storable a r => Storable (BooleanFormula a) r where
     store (Var a) = store a
     store (And formulas) = store formulas
     store (Or formulas) = store formulas
     store (Parens formula) = store formula
 
-instance IsGhcPass p r => HaskellAst (ConDeclField (GhcPass p)) r where 
+instance StorablePass p r => Storable (ConDeclField (GhcPass p)) r where 
     store (ConDeclField _ names typ _) = defining (pushDownContext (storeDefCtx DefCtorArg) (store names)) >> store typ
     store (XConDeclField {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (FieldOcc (GhcPass p)) r where 
+instance StorablePass p r => Storable (FieldOcc (GhcPass p)) r where 
     store (FieldOcc selector _) = store selector
     store (XFieldOcc {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (AmbiguousFieldOcc (GhcPass p)) r where 
+instance StorablePass p r => Storable (AmbiguousFieldOcc (GhcPass p)) r where 
     store (Unambiguous name _) = store name
     store (Ambiguous {}) = return () -- will become unambiguous after type checking
     store (XAmbiguousFieldOcc {}) = return ()
 
-instance (IsGhcPass p r, HaskellAst a r) => HaskellAst (HsRecFields (GhcPass p) a) r where 
+instance (StorablePass p r, Storable a r) => Storable (HsRecFields (GhcPass p) a) r where 
     store (HsRecFields flds _) = store flds
 
-instance (HaskellAst id r, HaskellAst arg r) => HaskellAst (HsRecField' id arg) r where 
+instance (Storable id r, Storable arg r) => Storable (HsRecField' id arg) r where 
     store (HsRecField lbl arg _) = store lbl >> store arg
 
-instance IsGhcPass p r => HaskellAst (ArithSeqInfo (GhcPass p)) r where 
+instance StorablePass p r => Storable (ArithSeqInfo (GhcPass p)) r where 
     store (From from) = store from
     store (FromThen from step) = store from >> store step
     store (FromTo from to) = store from >> store to
     store (FromThenTo from step to) = store from >> store step >> store to
 
-instance IsGhcPass p r => HaskellAst (HsBracket (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsBracket (GhcPass p)) r where 
     store (ExpBr _ e) = store e
     store (PatBr _ p) = store p
     store (DecBrL _ d) = store d
@@ -509,13 +513,13 @@ instance IsGhcPass p r => HaskellAst (HsBracket (GhcPass p)) r where
     store (TExpBr _ e) = store e
     store (XBracket {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsGroup (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsGroup (GhcPass p)) r where 
     store (HsGroup _ vals spl tycl derivs fixs defds fords warns anns rules _)
         = store vals >> store spl >> store tycl >> store derivs >> store fixs >> store defds 
             >> store fords >> store warns >> store anns >> store rules
     store (XHsGroup {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsDecl (GhcPass p)) r where 
+instance StorablePass p r => Storable (HsDecl (GhcPass p)) r where 
     store (TyClD _ d) = store d
     store (InstD _ d) = store d
     store (DerivD _ d) = store d
@@ -531,7 +535,7 @@ instance IsGhcPass p r => HaskellAst (HsDecl (GhcPass p)) r where
     store (RoleAnnotD _ d) = store d
     store (XHsDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (TyClDecl (GhcPass p)) r where 
+instance StorablePass p r => Storable (TyClDecl (GhcPass p)) r where 
     store (FamDecl _ d) = store d
     store (SynDecl _ name vars _ rhs) = defining (store name >> store vars) >> store rhs
     store (DataDecl _ name vars _ def) =
@@ -543,121 +547,121 @@ instance IsGhcPass p r => HaskellAst (TyClDecl (GhcPass p)) r where
         >> store methods >> store assocTypes >> store assocDefaults
     store (XTyClDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (InstDecl (GhcPass p)) r where 
+instance StorablePass p r => Storable (InstDecl (GhcPass p)) r where 
     store (ClsInstD _ d) = storeDefCtx DefInstance $ store d
     store (DataFamInstD _ d) = store d
     store (TyFamInstD _ d) = store d
     store (XInstDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (TyFamInstDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (TyFamInstDecl (GhcPass p)) r where
     store (TyFamInstDecl eqn) = store eqn
 
-instance (IsGhcPass p r, HaskellAst pat r, HaskellAst rhs r) => HaskellAst (FamEqn (GhcPass p) pat rhs) r where
+instance (StorablePass p r, Storable pat r, Storable rhs r) => Storable (FamEqn (GhcPass p) pat rhs) r where
     store (FamEqn _ name pats _ rhs) = defining (store name) >> store pats >> store rhs
     store (XFamEqn {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (DataFamInstDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (DataFamInstDecl (GhcPass p)) r where
     store (DataFamInstDecl eqn) = store eqn
 
-instance IsGhcPass p r => HaskellAst (HsDataDefn (GhcPass p)) r where
+instance StorablePass p r => Storable (HsDataDefn (GhcPass p)) r where
     store (HsDataDefn _ _ ctx _ ts cons derivs) = store ctx >> store ts >> store cons >> store derivs
     store (XHsDataDefn {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsDerivingClause (GhcPass p)) r where
+instance StorablePass p r => Storable (HsDerivingClause (GhcPass p)) r where
     store (HsDerivingClause _ _ tys) = store tys
     store (XHsDerivingClause {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (ConDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (ConDecl (GhcPass p)) r where
     store (ConDeclGADT _ names _ qvars ctx args res _) =
         storeDefCtx DefConstructor $ defining (store names >> store qvars) >> store ctx >> store args >> store res
     store (ConDeclH98 _ name _ tvs ctx details _) =
         storeDefCtx DefConstructor $ defining (store name >> store tvs) >> store ctx >> store details
     store (XConDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (LHsQTyVars (GhcPass p)) r where
+instance StorablePass p r => Storable (LHsQTyVars (GhcPass p)) r where
     store (HsQTvs _ tys) = store tys
     store (XLHsQTyVars {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (ClsInstDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (ClsInstDecl (GhcPass p)) r where
     store (ClsInstDecl _ ty binds sigs typeFamInst dataFamInst _)
         = store ty >> store binds >> store sigs >> store typeFamInst >> store dataFamInst
     store (XClsInstDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (FamilyDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (FamilyDecl (GhcPass p)) r where
     store (FamilyDecl _ info name tyVars _ sig inj)
         = store info >> defining (store name >> store tyVars) >> store sig >> store inj
     store (XFamilyDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (InjectivityAnn (GhcPass p)) r where
+instance StorablePass p r => Storable (InjectivityAnn (GhcPass p)) r where
     store (InjectivityAnn lhs rhs) = store lhs >> store rhs
 
-instance IsGhcPass p r => HaskellAst (FamilyResultSig (GhcPass p)) r where
+instance StorablePass p r => Storable (FamilyResultSig (GhcPass p)) r where
     store (NoSig {}) = return ()
     store (KindSig _ k) = store k
     store (TyVarSig _ tv) = store tv
     store (XFamilyResultSig {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (FamilyInfo (GhcPass p)) r where
+instance StorablePass p r => Storable (FamilyInfo (GhcPass p)) r where
     store DataFamily = return ()
     store OpenTypeFamily = return ()
     store (ClosedTypeFamily eqs) = store eqs
 
-instance IsGhcPass p r => HaskellAst (RoleAnnotDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (RoleAnnotDecl (GhcPass p)) r where
     store (RoleAnnotDecl _ ids _) = store ids
     store (XRoleAnnotDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (SpliceDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (SpliceDecl (GhcPass p)) r where
     store (SpliceDecl _ spl _) = store spl
     store (XSpliceDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (RuleDecls (GhcPass p)) r where
+instance StorablePass p r => Storable (RuleDecls (GhcPass p)) r where
     store (HsRules _ _ rules) = store rules
     store (XRuleDecls {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (RuleDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (RuleDecl (GhcPass p)) r where
     store (HsRule _ _ _ bndrs e1 e2) = store bndrs >> store e1 >> store e2
     store (XRuleDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (RuleBndr (GhcPass p)) r where
+instance StorablePass p r => Storable (RuleBndr (GhcPass p)) r where
     store (RuleBndr _ name) = store name
     store (RuleBndrSig _ name ty) = store name >> store ty
     store (XRuleBndr {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (AnnDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (AnnDecl (GhcPass p)) r where
     store (HsAnnotation _ _ prov e) = store prov >> store e
     store (XAnnDecl {}) = return ()
 
-instance HaskellAst n r => HaskellAst (AnnProvenance n) r where
+instance Storable n r => Storable (AnnProvenance n) r where
     store (ValueAnnProvenance n) = store n
     store (TypeAnnProvenance n) = store n
     store (ModuleAnnProvenance) = return ()
 
-instance IsGhcPass p r => HaskellAst (WarnDecls (GhcPass p)) r where
+instance StorablePass p r => Storable (WarnDecls (GhcPass p)) r where
     store (Warnings _ _ w) = store w
     store (XWarnDecls {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (WarnDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (WarnDecl (GhcPass p)) r where
     store (Warning _ n _) = store n
     store (XWarnDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (ForeignDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (ForeignDecl (GhcPass p)) r where
     store (ForeignImport _ n t _) = defining (store n) >> store t
     store (ForeignExport _ n t _) = defining (store n) >> store t
     store (XForeignDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (DefaultDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (DefaultDecl (GhcPass p)) r where
     store (DefaultDecl _ ts) = store ts
     store (XDefaultDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (DerivDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (DerivDecl (GhcPass p)) r where
     store (DerivDecl _ t _ _) = store t
     store (XDerivDecl {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsCmdTop (GhcPass p)) r where
+instance StorablePass p r => Storable (HsCmdTop (GhcPass p)) r where
     store (HsCmdTop _ c) = store c
     store (XCmdTop {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsCmd (GhcPass p)) r where
+instance StorablePass p r => Storable (HsCmd (GhcPass p)) r where
     store (HsCmdArrApp _ e1 e2 _ _) = store e1 >> store e2
     store (HsCmdArrForm _ e _ _ c) = store e >> store c
     store (HsCmdApp _ c e) = store c >> store e
@@ -670,31 +674,31 @@ instance IsGhcPass p r => HaskellAst (HsCmd (GhcPass p)) r where
     store (HsCmdWrap _ _ c) = store c
     store (XCmd {}) = return ()
 
-instance (IsGhcPass p1 r, IsGhcPass p2 r) => HaskellAst (ParStmtBlock (GhcPass p1) (GhcPass p2)) r where
+instance (StorablePass p1 r, StorablePass p2 r) => Storable (ParStmtBlock (GhcPass p1) (GhcPass p2)) r where
     store (ParStmtBlock _ e n _) = store e >> store n
     store (XParStmtBlock {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (ApplicativeArg (GhcPass p)) r where
+instance StorablePass p r => Storable (ApplicativeArg (GhcPass p)) r where
     store (ApplicativeArgOne _ p e _) = store p >> store e
     store (ApplicativeArgMany _ stmts e p) = store stmts >> store e >> store p
     store (XApplicativeArg {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (TyClGroup (GhcPass p)) r where
+instance StorablePass p r => Storable (TyClGroup (GhcPass p)) r where
     store (TyClGroup _ tyclds roles insts) = store tyclds >> store roles >> store insts
     store (XTyClGroup {}) = return ()
 
-instance IsGhcPass p r => HaskellAst (HsModule (GhcPass p)) r where
+instance StorablePass p r => Storable (HsModule (GhcPass p)) r where
   store (HsModule nm _exports imports decls _ _) = storeDefCtx DefModule $ do
     defining $ store nm
     store imports
     store decls
 
-instance IsGhcPass p r => HaskellAst (ImportDecl (GhcPass p)) r where
+instance StorablePass p r => Storable (ImportDecl (GhcPass p)) r where
   store (ImportDecl { ideclName = modName, ideclHiding = qualNames }) =
     store modName >> store (fmap snd qualNames)
   store (XImportDecl {}) = return ()
 
-instance HaskellAst ModuleName ParseRecord where
+instance Storable ModuleName ParseRecord where
   store mn = currentPos $ \np -> do
     isDefined <- asks scDefining
     definitionPos <- getDefinitionPosition
@@ -706,14 +710,14 @@ instance HaskellAst ModuleName ParseRecord where
             definitionPos
     tell [ modNameRec ]
 
-instance HaskellAst ModuleName TypeRecord where
+instance Storable ModuleName TypeRecord where
   store _ = return ()
-instance HaskellAst ModuleName NameRecord where
+instance Storable ModuleName NameRecord where
   store _ = return ()
-instance HaskellAst ModuleName NameAndTypeRecord where
+instance Storable ModuleName NameAndTypeRecord where
   store _ = return ()
 
-instance IsGhcPass p r => HaskellAst (IE (GhcPass p)) r where
+instance StorablePass p r => Storable (IE (GhcPass p)) r where
   store (IEVar _ n) = store n
   store (IEThingAbs _ n) = store n
   store (IEThingAll _ n) = store n
@@ -724,34 +728,34 @@ instance IsGhcPass p r => HaskellAst (IE (GhcPass p)) r where
   store (IEDocNamed {}) = return ()
   store (XIE {}) = return ()
 
-instance (HaskellAst p r) => HaskellAst (IEWrappedName p) r where
+instance (Storable p r) => Storable (IEWrappedName p) r where
   store (IEName n) = store n
   store (IEPattern n) = store n
   store (IEType n) = store n
 
-instance (HaskellAst p r) => HaskellAst (FieldLbl p) r where
+instance (Storable p r) => Storable (FieldLbl p) r where
   store (FieldLabel _ _ n) = store n
 
-instance HaskellAst TyThing TypeRecord where
+instance Storable TyThing TypeRecord where
   store (AnId id) = store id
   store (AConLike conLike) = store conLike
   store (ATyCon tycon) = store tycon
   store (ACoAxiom _) = return ()
 
-instance HaskellAst ConLike TypeRecord where
+instance Storable ConLike TypeRecord where
   store (RealDataCon dataCon) = store dataCon
   store (PatSynCon patSyn) = store patSyn
 
-instance HaskellAst TyCon TypeRecord where
+instance Storable TyCon TypeRecord where
   store tc = do 
     currentModuleName <- asks scModuleName
     tell [ nameTypeToTypeRecord currentModuleName (tyConName tc) (tyConKind tc) ]
     store (tyConDataCons_maybe tc)
 
-instance HaskellAst PatSyn TypeRecord where
+instance Storable PatSyn TypeRecord where
   store _ps = return ()
 
-instance HaskellAst DataCon TypeRecord where
+instance Storable DataCon TypeRecord where
   store dc = do
     currentModuleName <- asks scModuleName
     tell [ nameTypeToTypeRecord currentModuleName (dataConName dc) (dataConRepType dc) ]
