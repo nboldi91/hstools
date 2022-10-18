@@ -53,6 +53,20 @@ currentDefinition = asks (listToMaybe . scDefinitions)
 data DefinitionContext = DefinitionContext { dcKind :: DefinitionKind, dcSpan :: SrcSpan }
   deriving Eq
 
+getDefinitionPosition :: StoreM r (Maybe NodePos)
+getDefinitionPosition = do
+  isInsideDefinition <- asks scInsideDefinition
+  definition <- currentDefinition
+  defined <- asks scDefining
+  return $ guard (defined && not isInsideDefinition) >> definition >>= srcSpanToNodePos . dcSpan
+
+currentPos :: (NodePos -> StoreM r ()) -> StoreM r ()
+currentPos st = do
+  span <- asks scSpan
+  case srcSpanToNodePos span of
+    Just np -> st np
+    Nothing -> return ()
+
 defaultStoreContext :: Connection -> Int -> String -> Maybe SrcSpan -> IO (StoreContext r)
 defaultStoreContext conn moduleId moduleName modSpan = do
   thSpans <- getTHRanges conn moduleId

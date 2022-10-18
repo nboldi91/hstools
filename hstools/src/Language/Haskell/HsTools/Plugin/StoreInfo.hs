@@ -52,12 +52,17 @@ storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
       putStrLn "### Storing ast definitions:"
       mapM_ print sortedDefs
     astIds <- persistAst conn (map convertLocation sortedDefs)
-    defIds <- persistDefinitions conn (map convertDefinition $ sortedDefs `zip` astIds)
+    defIds <- persistDefinitions conn (catMaybes $ map convertDefinition $ sortedDefs `zip` astIds)
     persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (sortedDefs `zip` defIds)
+    persistName conn (catMaybes $ map convertName (sortedDefs `zip` astIds))
   where
-    convertLocation (ParseDefinitionRecord _ (NodePos startRow startColumn endRow endColumn))
-      = (moduleId, startRow, startColumn, endRow, endColumn)
-    convertDefinition ((ParseDefinitionRecord kind _), astId) = (moduleId, astId, kind)
+    convertLocation p = (moduleId, startRow, startColumn, endRow, endColumn)
+      where NodePos startRow startColumn endRow endColumn = prPos p
+    convertDefinition ((ParseDefinitionRecord kind _), astId) = Just (moduleId, astId, kind)
+    convertDefinition _ = Nothing
+    convertName ((ParseModuleName mn _ isDefined definition), astId) =
+      Just (moduleId, astId :: Int, mn, Just $ fromEnum ModuleNS, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
+    convertName _ = Nothing
 
 findDefinitionOfComments :: Int -> Map.Map SrcSpan [Located AnnotationComment] -> [(ParseRecord, Int)] -> [(Int, Int, String)]
 findDefinitionOfComments moduleId commMap records =

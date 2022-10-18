@@ -45,6 +45,7 @@ type IsGhcPass p r =
   , HaskellAst TypedName r
   , CanStoreDefinition r
   , HaskellAst (IdP (GhcPass p)) r
+  , HaskellAst ModuleName r
   , HaskellAst (XExprWithTySig (GhcPass p)) r
   , HaskellAst (XSigPat (GhcPass p)) r
   , HaskellAst (XCFieldOcc (GhcPass p)) r
@@ -116,14 +117,13 @@ instance HaskellAst Name NameRecord where
   store id = asks scSpan >>= \case
     RealSrcSpan span -> do
       currentModuleName <- asks scModuleName
-      isInsideDefinition <- asks scInsideDefinition
-      definition <- currentDefinition
       defined <- asks scDefining
+      defNodePos <- getDefinitionPosition
       let storedName = NameRecord
             { nmName = generateFullName currentModuleName id
             , nmNamespace = nameNamespace id
             , nmIsDefined = defined
-            , nmDefinitionOf = guard (defined && not isInsideDefinition) >> definition >>= srcSpanToNodePos . dcSpan
+            , nmDefinitionOf = defNodePos
             , nmPos = realSrcSpanToNodePos span
             }
       tell [storedName] 
@@ -199,25 +199,21 @@ generateFullName currentModuleName name = case nameModule_maybe name of
   Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
 
 instance HaskellAst Name NameAndTypeRecord where
-  store id = do 
-    span <- asks scSpan
-    case srcSpanToNodePos span of
-      Just np -> do
-        currentModuleName <- asks scModuleName
-        defined <- asks scDefining
-        let modName = nameModule_maybe id
-            fullName = case modName of
-                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
-                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
-            record = NameAndTypeRecord
-                { ntrName = fullName
-                , ntrNamespace = nameNamespace id
-                , ntrIsDefined = defined
-                , ntrType = Nothing
-                , ntrPos = np
-                }
-        tell [record] 
-      Nothing -> return ()
+  store id = currentPos $ \np -> do
+    currentModuleName <- asks scModuleName
+    defined <- asks scDefining
+    let modName = nameModule_maybe id
+        fullName = case modName of
+                    Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
+                    Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
+        record = NameAndTypeRecord
+            { ntrName = fullName
+            , ntrNamespace = nameNamespace id
+            , ntrIsDefined = defined
+            , ntrType = Nothing
+            , ntrPos = np
+            }
+    tell [record] 
 
 instance HaskellAst Type r where
   store _ = return ()
@@ -688,7 +684,53 @@ instance IsGhcPass p r => HaskellAst (TyClGroup (GhcPass p)) r where
     store (XTyClGroup {}) = return ()
 
 instance IsGhcPass p r => HaskellAst (HsModule (GhcPass p)) r where
-  store (HsModule _nm _exports _imports decls _ _) = storeDefCtx DefModule $ store decls
+  store (HsModule nm _exports imports decls _ _) = storeDefCtx DefModule $ do
+    defining $ store nm
+    store imports
+    store decls
+
+instance IsGhcPass p r => HaskellAst (ImportDecl (GhcPass p)) r where
+  store (ImportDecl { ideclName = modName, ideclHiding = qualNames }) =
+    store modName >> store (fmap snd qualNames)
+  store (XImportDecl {}) = return ()
+
+instance HaskellAst ModuleName ParseRecord where
+  store mn = currentPos $ \np -> do
+    isDefined <- asks scDefining
+    definitionPos <- getDefinitionPosition
+    let modNameRec =
+          ParseModuleName
+            (moduleNameString mn)
+            np
+            isDefined
+            definitionPos
+    tell [ modNameRec ]
+
+instance HaskellAst ModuleName TypeRecord where
+  store _ = return ()
+instance HaskellAst ModuleName NameRecord where
+  store _ = return ()
+instance HaskellAst ModuleName NameAndTypeRecord where
+  store _ = return ()
+
+instance IsGhcPass p r => HaskellAst (IE (GhcPass p)) r where
+  store (IEVar _ n) = store n
+  store (IEThingAbs _ n) = store n
+  store (IEThingAll _ n) = store n
+  store (IEThingWith _ n _ subNames labels) = store n >> store subNames >> store labels
+  store (IEModuleContents _ mn) = store mn
+  store (IEGroup {}) = return ()
+  store (IEDoc {}) = return ()
+  store (IEDocNamed {}) = return ()
+  store (XIE {}) = return ()
+
+instance (HaskellAst p r) => HaskellAst (IEWrappedName p) r where
+  store (IEName n) = store n
+  store (IEPattern n) = store n
+  store (IEType n) = store n
+
+instance (HaskellAst p r) => HaskellAst (FieldLbl p) r where
+  store (FieldLabel _ _ n) = store n
 
 instance HaskellAst TyThing TypeRecord where
   store (AnId id) = store id

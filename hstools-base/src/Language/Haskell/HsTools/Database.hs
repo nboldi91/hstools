@@ -15,7 +15,7 @@ import Database.PostgreSQL.Simple
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
 
-data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS deriving (Show, Enum, Eq, Ord)
+data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS | ModuleNS deriving (Show, Enum, Eq, Ord)
 
 data DefinitionKind
   = DefModule | DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass

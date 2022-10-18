@@ -36,7 +36,9 @@ test_empty :: Assertion
 test_empty = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where"] (runGhcTest conn)
   names <- getAllNames conn
-  assertEqual [] names
+  assertEqual [ (1, 8, "X", Nothing, True) ] names
+  defs <- getAllDefinitions conn
+  assertEqual [ (DefModule, Just "X", 1, 1, 2, 1) ] defs
 
 test_oneDef :: Assertion
 test_oneDef = useTestRepo $ \conn -> do
@@ -131,7 +133,7 @@ test_fullDataType = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "data A a = B a a | C { x :: a }"] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefModule, Nothing, 1, 1, 3, 1)
+    [ (DefModule, Just "X", 1, 1, 3, 1)
     , (DefTypeDecl, Just "X.A", 2, 1, 2, 32)
     , (DefConstructor, Just "X.B", 2, 12, 2, 17)
     , (DefCtorArg, Nothing, 2, 14, 2, 15)
@@ -171,7 +173,7 @@ test_comments = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "-- | comment for x", "x :: ()", "-- ^ another comment for x", "x = ()"] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefModule, Nothing, 1, 1, 6, 1)
+    [ (DefModule, Just "X", 1, 1, 6, 1)
     , (DefSignature, Just "X.x", 3, 1, 3, 8)
     , (DefValue, Just "X.x", 5, 1, 5, 7)
     ] defs
@@ -183,7 +185,7 @@ test_commentsInLineOnArgs = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "f :: String {-^ arg1 -} -> {-| arg2 -} Int -> String {-^ result -}", "f \"\" _ = \"\""] (runGhcTest conn)
   defs <- getAllDefinitions conn
   assertEqual
-    [ (DefModule, Nothing, 1, 1, 4, 1)
+    [ (DefModule, Just "X", 1, 1, 4, 1)
     , (DefSignature, Just "X.f", 2, 1, 2, 53)
     , (DefParameter, Nothing, 2, 6, 2, 12)
     , (DefParameter, Nothing, 2, 40, 2, 43)
@@ -204,6 +206,9 @@ test_multipleModules = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (3, 1, Global "X.x", "()", Definition)
   gsubAssert $ assertHasName names (3, 5, Global "Y.y", "()", Use)
   gsubAssert $ assertHasName names (2, 1, Global "Y.y", "()", Definition)
+
+  gsubAssert $ assertHasNameNoType names (1, 8, Global "Y", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 8, Global "Y", Use)
 
 test_reStore :: Assertion
 test_reStore = useTestRepo $ \conn -> do
