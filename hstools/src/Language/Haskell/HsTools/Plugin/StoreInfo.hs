@@ -37,6 +37,7 @@ import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Plugin.Storable
 import Language.Haskell.HsTools.Plugin.StorableInstances ()
+import Language.Haskell.HsTools.Plugin.StoreComments
 import Language.Haskell.HsTools.Database
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
@@ -64,34 +65,6 @@ storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
     convertName ((ParseModuleName mn _ isDefined definition), astId) =
       Just (moduleId, astId :: Int, mn, Just $ fromEnum ModuleNS, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
     convertName _ = Nothing
-
-findDefinitionOfComments :: Int -> Map.Map SrcSpan [Located AnnotationComment] -> [(ParseRecord, Int)] -> [(Int, Int, String)]
-findDefinitionOfComments moduleId commMap records =
-  map (\(defId, text) -> (moduleId, defId, text))
-    $ definitionsComments
-      (catMaybes $ map (\(L l c) -> (, getAnnString c) <$> srcSpanToNodePos l) $ concat $ Map.elems commMap)
-      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos sr sc _ _), defId) -> ((sr, sc), defId)) records)
-      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos _ _ er ec), defId) -> ((er, ec), defId)) records)
-
-definitionsComments :: [(NodePos, String)] -> Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> [(Int, String)]
-definitionsComments comments defStartMap defEndMap = catMaybes $ map (findCommentedDef defStartMap defEndMap) comments
-
-findCommentedDef :: Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> (NodePos, String) -> Maybe (Int, String)
-findCommentedDef defStartMap defEndMap (np, comm)
-  | "-- |" `isPrefixOf` comm || "{- |" `isPrefixOf` comm || "{-|" `isPrefixOf` comm =
-    fmap ((,comm) . fst) $ Map.minView $ snd $ Map.split (npEndRow np, npEndCol np) defStartMap
-  | "-- ^" `isPrefixOf` comm || "{- ^" `isPrefixOf` comm || "{-^" `isPrefixOf` comm =
-    fmap ((,comm) . fst) $ Map.maxView $ fst $ Map.split (npStartRow np, npStartCol np) defEndMap
-  | otherwise = Nothing
-
-getAnnString :: AnnotationComment -> String
-getAnnString (AnnDocCommentNext str) = str
-getAnnString (AnnDocCommentPrev str) = str
-getAnnString (AnnDocCommentNamed str) = str
-getAnnString (AnnDocSection _ str) = str
-getAnnString (AnnDocOptions str) = str
-getAnnString (AnnLineComment str) = str
-getAnnString (AnnBlockComment str) = str
 
 storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
