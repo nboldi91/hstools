@@ -197,7 +197,7 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 4
+databaseSchemaVersion = 5
 
 databaseSchema :: Query
 databaseSchema = [sql|
