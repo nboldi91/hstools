@@ -27,12 +27,6 @@ spToPos (SP line char) = LSP.Position (fromIntegral line - 1) (fromIntegral char
 rangeToLSP :: Range orig -> LSP.Range
 rangeToLSP (Range start end) = LSP.Range (spToPos start) (spToPos end)
 
-lineToLoc :: SourceDiffs orig mod -> (String, Int, Int, Int, Int) -> Maybe LSP.Location
-lineToLoc rewrites (file, startLine, startCol, endLine, endCol)
-  = fmap (LSP.Location (LSP.filePathToUri file) . rangeToLSP) 
-      $ originalToNewRangeStrict rewrites 
-      $ Range (SP startLine startCol) (SP endLine endCol)
-
 nothingIfEmpty :: String -> Maybe String
 nothingIfEmpty "" = Nothing
 nothingIfEmpty str = Just str

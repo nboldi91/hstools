@@ -8,11 +8,13 @@ import qualified Data.Text as T
 import Data.Time.Clock
 import Database.PostgreSQL.Simple (Connection)
 import Language.LSP.Server as LSP
-import Language.LSP.Types as LSP
+import qualified Language.LSP.Types as LSP
 
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
+import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.SourceDiffs
+import Language.Haskell.HsTools.SourcePosition
 import Language.Haskell.HsTools.Database
 
 data LspContext = LspContext { ctOperation :: String }
@@ -33,21 +35,29 @@ withConnection act = do
     Just conn -> act conn
     Nothing -> sendError $ T.pack $ operation ++ " needs DB connection"
 
-ensureFileLocationRequest :: Uri -> (Either ResponseError a -> LspM Config ()) -> (FilePath -> LspMonad ()) -> LspMonad ()
-ensureFileLocationRequest location responder action = case uriToFilePath location of
+ensureFileLocationRequest :: LSP.Uri -> (Either LSP.ResponseError a -> LspM Config ()) -> (FilePath -> LspMonad ()) -> LspMonad ()
+ensureFileLocationRequest location responder action = case LSP.uriToFilePath location of
   Just fp -> action fp
   Nothing -> do
     operation <- asks ctOperation
     liftLSP $ responder $ Left $ responseError $ T.pack $ "Can't " ++ operation ++ ": Document is not a file"
 
-ensureFileLocation :: Uri -> (FilePath -> LspMonad ()) -> LspMonad ()
-ensureFileLocation location action = case uriToFilePath location of
+ensureFileLocation :: LSP.Uri -> (FilePath -> LspMonad ()) -> LspMonad ()
+ensureFileLocation location action = case LSP.uriToFilePath location of
   Just fp -> action fp
   Nothing -> do
     operation <- asks ctOperation
     sendError $ T.pack $ "Can't " ++ operation ++ ": Document is not a file"
 
-responseError m = ResponseError InvalidRequest m Nothing
+responseError m = LSP.ResponseError LSP.InvalidRequest m Nothing
+
+lineToLoc :: (String, Int, Int, Int, Int) -> LspMonad (Maybe LSP.Location)
+lineToLoc (file, startLine, startCol, endLine, endCol) = do
+  rewrites <- getRewrites file 
+  return
+    $ fmap (LSP.Location (LSP.filePathToUri file) . rangeToLSP) 
+    $ originalToNewRangeStrict rewrites 
+    $ Range (SP startLine startCol) (SP endLine endCol)
 
 getRewrites :: FilePath -> LspMonad (SourceDiffs Original Modified)
 getRewrites fp = do
@@ -56,13 +66,13 @@ getRewrites fp = do
   return $ maybe emptyDiffs frDiffs $ Map.lookup fp fileRecords
 
 sendMessage :: T.Text -> LspMonad ()
-sendMessage = liftLSP . sendNotification SWindowShowMessage . ShowMessageParams MtInfo
+sendMessage = liftLSP . sendNotification LSP.SWindowShowMessage . LSP.ShowMessageParams LSP.MtInfo
 
 sendError :: T.Text -> LspMonad ()
-sendError = liftLSP . sendNotification SWindowShowMessage . ShowMessageParams MtError
+sendError = liftLSP . sendNotification LSP.SWindowShowMessage . LSP.ShowMessageParams LSP.MtError
 
 logMessage :: T.Text -> LspMonad ()
-logMessage = liftLSP . sendNotification SWindowLogMessage . LogMessageParams MtInfo
+logMessage = liftLSP . sendNotification LSP.SWindowLogMessage . LSP.LogMessageParams LSP.MtInfo
 
 handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
 handleErrorsCtx conn action = do

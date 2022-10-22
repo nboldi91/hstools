@@ -89,7 +89,8 @@ handlers = mconcat
         case newToOriginalPos rewrites (posToSP pos) of
           Right originalPos -> do
             names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (Just True)
-            liftLSP $ responder $ Right $ InR $ InL $ LSP.List $ take 1 $ catMaybes $ map (lineToLoc rewrites) names
+            results <- mapM lineToLoc names
+            liftLSP $ responder $ Right $ InR $ InL $ LSP.List $ take 1 $ catMaybes results
           Left _ -> liftLSP $ responder $ Right $ InR $ InL $ LSP.List [] -- the source position was not in the compiled source code
 
   , requestHandler STextDocumentReferences $ \req responder -> handlerCtx "STextDocumentReferences" $ \conn -> do
@@ -99,7 +100,8 @@ handlers = mconcat
         case newToOriginalPos rewrites (posToSP pos) of
           Right originalPos -> do
             names <- liftIO $ getMatchingNames conn file (spLine originalPos) (spCol originalPos) (if not includeDefinition then Just False else Nothing)
-            liftLSP $ responder $ Right $ LSP.List $ catMaybes $ map (lineToLoc rewrites) names
+            results <- mapM lineToLoc names
+            liftLSP $ responder $ Right $ LSP.List $ catMaybes $ results
           Left _ -> liftLSP $ responder $ Right $ LSP.List [] -- the source position was not in the compiled source code
 
   , requestHandler STextDocumentHover $ \req responder -> handlerCtx "STextDocumentHover" $ \conn -> do
