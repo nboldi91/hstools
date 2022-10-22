@@ -184,16 +184,8 @@ cleanRelatedData conn moduleId = void $ do
 reinitializeTablesIfNeeded :: Connection -> IO ()
 reinitializeTablesIfNeeded conn = do
   res <- try $ query_ conn "SELECT versionNumber FROM version" :: IO (Either SomeException [[Int]])
-  currentTime <- getCurrentTime
   case res of
-    Right [[r]]
-      | databaseSchemaVersion == r -> return ()
-      | otherwise -> do
-        logErrorMessage conn currentTime "reinitializeTablesIfNeeded" ("version mismatch: " ++ show r ++ " /= " ++ show databaseSchemaVersion)
-        reinitializeTables conn
-    Left err -> do
-      logErrorMessage conn currentTime "reinitializeTablesIfNeeded" (show err)
-      reinitializeTables conn
+    Right [[r]] | databaseSchemaVersion == r -> return ()
     _ -> reinitializeTables conn
 
 reinitializeTables :: Connection -> IO ()

@@ -1,4 +1,5 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE TupleSections #-}
 module Language.Haskell.HsTools.LspServer.FileRecords where
 
 import Control.Concurrent.MVar
@@ -52,8 +53,9 @@ recordFileClosed conn fp mv
     updateRecord fileRecord = return fileRecord
 
 markFileRecordsClean :: [FilePath] -> FileRecords -> IO ()
-markFileRecordsClean files
-  = modifyMVarPure $ Map.mapWithKey (\fp fr -> if fp `elem` files then fr{frDiffs = emptyDiffs} else fr)
+markFileRecordsClean files = modifyMVarPure
+    (Map.mapWithKey (\fp fr -> if fp `elem` files then fr{frDiffs = emptyDiffs} else fr)
+      . (`Map.union` (Map.fromList $ map (, FileRecord emptyDiffs) files)))
 
 updateSavedFileRecords :: FilePath -> [Rewrite Modified] -> FileRecords -> IO ()
 updateSavedFileRecords fp newDiffs = modifyMVarPure $ \fr -> Map.adjust updateDiffs fp fr
