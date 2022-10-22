@@ -147,11 +147,14 @@ test_rewriteListener = useTestRepo $ \conn -> do
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
   withTestFile fullFilePath (T.unpack fileContent) $ do
     runTest $ do
-      liftIO $ writeFile fullFilePath (unlines ["   x = y", "y = ()"])
       doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
+      closeDoc doc
+      definition1 <- getDefinitions doc (Position 0 5)
+      liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition1
+      liftIO $ writeFile fullFilePath (unlines ["   x = y", "y = ()"])
       sendNotification SWorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams $ List [ FileEvent uri FcChanged ]
-      definition <- getDefinitions doc (Position 0 8)
-      liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+      definition2 <- getDefinitions doc (Position 0 8)
+      liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition2
 
 -- the file was modified before the current session
 test_rewriteSaved :: Assertion
