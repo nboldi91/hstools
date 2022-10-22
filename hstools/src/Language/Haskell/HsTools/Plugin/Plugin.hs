@@ -74,7 +74,7 @@ cleanAndRecordModule conn ms = do
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
   when (isVerbose clOpts) $ putStrLn $ "Starting stage: parsedAction"
-  withDB clOpts $ \conn -> do
+  withDB clOpts $ \conn -> handleErrors conn "parsedAction" $ do
     reinitializeTablesIfNeeded conn
     moduleFilePath <- cleanAndRecordModule conn ms
     let modName = moduleNameString $ ms_mod_name ms
