@@ -23,6 +23,8 @@ import System.Directory
 import System.FilePath
 
 import qualified Test.Framework as F
+import Test.Framework.HUnitWrapper
+import Test.HUnit.Base (Assertion)
 import Language.LSP.Test as LSP
 import Language.LSP.Types as LSP
 
@@ -31,8 +33,6 @@ import Language.Haskell.HsTools.LspServer.LspServer (mainWithHandles)
 import Language.Haskell.HsTools.SourcePosition as SP
 import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.Utils
-
-assertEqual exp act = liftIO $ F.assertEqual exp act
 
 runTest :: Session () -> IO ()
 runTest session = do
@@ -59,16 +59,16 @@ serverConfig = A.Object (A.singleton "hstools" $ A.Object (A.singleton "postgres
 useTestRepo test = withTestRepo connectionStringWithoutDB connectionDBName (\conn -> test conn `finally` printErrors conn)
   where printErrors conn = getErrors conn >>= mapM_ print 
 
-test_simpleGotoDefinition :: IO ()
+test_simpleGotoDefinition :: Assertion
 test_simpleGotoDefinition = useTestRepo $ \conn -> do
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     definition <- getDefinitions doc (Position 0 5)
-    assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
-test_multiFileGotoDefinition :: IO ()
+test_multiFileGotoDefinition :: Assertion
 test_multiFileGotoDefinition = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -77,19 +77,19 @@ test_multiFileGotoDefinition = useTestRepo $ \conn -> do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     doc2 <- createDoc fileName2 "haskell" fileContent2
     definition <- getDefinitions doc2 (Position 1 5)
-    assertEqual (InL [Location uri $ LSP.Range (Position 0 0) (Position 0 1)]) definition
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 0 0) (Position 0 1)]) definition
 
-test_hovering :: IO ()
+test_hovering :: Assertion
 test_hovering = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     hover <- getHover doc (Position 0 5)
-    assertEqual (Just (Hover (HoverContents $ MarkupContent MkMarkdown "\n```hstools\ny\n  :: ()\n-- ^ comment for y\n```\n") $ Just $ LSP.Range (Position 0 4) (Position 0 5))) hover
+    liftIO $ assertEqual (Just (Hover (HoverContents $ MarkupContent MkMarkdown "\n```hstools\nX.y\n  :: ()\n-- ^ comment for y\n```\n") $ Just $ LSP.Range (Position 0 4) (Position 0 5))) hover
 
 -- file changed during session in an open editor
-test_rewriteInEditor :: IO ()
+test_rewriteInEditor :: Assertion
 test_rewriteInEditor = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -97,9 +97,24 @@ test_rewriteInEditor = useTestRepo $ \conn -> do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     changeDoc doc [TextDocumentContentChangeEvent (Just $ LSP.Range (Position 0 0) (Position 0 0)) Nothing "\n   "]
     definition <- getDefinitions doc (Position 1 8)
-    assertEqual (InL [Location uri $ LSP.Range (Position 2 0) (Position 2 1)]) definition
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 2 0) (Position 2 1)]) definition
 
-test_multipleRewritesInEditor :: IO ()
+-- file changed during session in an open editor
+test_rewriteInAnotherFile :: Assertion
+test_rewriteInAnotherFile = useTestRepo $ \conn -> do 
+  initializeTables conn
+  (fileName, fileContent) <- setupSimpleTestFile conn
+  (anotherFileName, anotherFileContent) <- setupAnotherTestFile conn
+  runTest $ do
+    doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
+    doc2@(TextDocumentIdentifier _) <- createDoc anotherFileName "haskell" anotherFileContent
+    definition <- getDefinitions doc2 (Position 1 4)
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 0 0) (Position 0 1)]) definition
+    changeDoc doc [TextDocumentContentChangeEvent (Just $ LSP.Range (Position 0 0) (Position 0 0)) Nothing "\n"]
+    definition2 <- getDefinitions doc2 (Position 1 4)
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition2
+
+test_multipleRewritesInEditor :: Assertion
 test_multipleRewritesInEditor = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -109,10 +124,10 @@ test_multipleRewritesInEditor = useTestRepo $ \conn -> do
     changeDoc doc [TextDocumentContentChangeEvent (Just $ LSP.Range (Position 0 0) (Position 0 0)) Nothing "\n"]
     changeDoc doc [TextDocumentContentChangeEvent (Just $ LSP.Range (Position 0 0) (Position 0 0)) Nothing "\n"]
     definition <- getDefinitions doc (Position 3 5)
-    assertEqual (InL [Location uri $ LSP.Range (Position 4 0) (Position 4 1)]) definition
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 4 0) (Position 4 1)]) definition
 
 -- the file was modified in an earlier session
-test_rewriteRecorded :: IO ()
+test_rewriteRecorded :: Assertion
 test_rewriteRecorded = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -122,10 +137,10 @@ test_rewriteRecorded = useTestRepo $ \conn -> do
   runTest $ do
     doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
     definition <- getDefinitions doc (Position 0 8)
-    assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
 -- the file was modified during the session while it is closed
-test_rewriteListener :: IO ()
+test_rewriteListener :: Assertion
 test_rewriteListener = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -136,10 +151,10 @@ test_rewriteListener = useTestRepo $ \conn -> do
       doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
       sendNotification SWorkspaceDidChangeWatchedFiles $ DidChangeWatchedFilesParams $ List [ FileEvent uri FcChanged ]
       definition <- getDefinitions doc (Position 0 8)
-      assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+      liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
 -- the file was modified before the current session
-test_rewriteSaved :: IO ()
+test_rewriteSaved :: Assertion
 test_rewriteSaved = useTestRepo $ \conn -> do 
   initializeTables conn
   (fileName, fileContent) <- setupSimpleTestFile conn
@@ -150,7 +165,7 @@ test_rewriteSaved = useTestRepo $ \conn -> do
     runTest $ do
       doc@(TextDocumentIdentifier uri) <- createDoc fileName "haskell" fileContent
       definition <- getDefinitions doc (Position 0 8)
-      assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+      liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
 ------------------------------------------------------------------------------------------------
 
@@ -176,13 +191,13 @@ setupSimpleTestFile conn = do
     ]
   persistComments conn [ (mi, defs !! 2, "-- ^ comment for y") ]
   persistName conn 
-    [ (mi, asts !! 0, "x", vnms, True, Just 1, Just 1, Just 1, Just 6)
-    , (mi, asts !! 1, "y", vnms, False, Nothing, Nothing, Nothing, Nothing)
-    , (mi, asts !! 2, "y", vnms, True, Just 2, Just 1, Just 2, Just 7)
+    [ (mi, asts !! 0, "X.x", vnms, True, Just 1, Just 1, Just 1, Just 6)
+    , (mi, asts !! 1, "X.y", vnms, False, Nothing, Nothing, Nothing, Nothing)
+    , (mi, asts !! 2, "X.y", vnms, True, Just 2, Just 1, Just 2, Just 7)
     ]
   persistTypes conn
-    [ ("x", vnms, "()")
-    , ("y", vnms, "()")
+    [ ("X.x", vnms, "()")
+    , ("X.y", vnms, "()")
     ]
   return (fileName, T.pack content)
 
@@ -192,19 +207,19 @@ setupAnotherTestFile conn = do
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
   let content = unlines ["import X", "z = x"]
   time <- getCurrentTime
-  mi <- insertModule conn fullFilePath time "X" "test" content
+  mi <- insertModule conn fullFilePath time "Y" "test" content
   asts <- persistAst conn
     [ (mi, 2, 1, 2, 2)
     , (mi, 2, 5, 2, 6)
     , (mi, 2, 1, 2, 6)
     ]
   persistName conn
-    [ (mi, asts !! 0, "z", vnms, True, Just 2, Just 1, Just 2, Just 6)
-    , (mi, asts !! 1, "x", vnms, False, Nothing, Nothing, Nothing, Nothing)
+    [ (mi, asts !! 0, "Y.z", vnms, True, Just 2, Just 1, Just 2, Just 6)
+    , (mi, asts !! 1, "X.x", vnms, False, Nothing, Nothing, Nothing, Nothing)
     ]
   persistTypes conn
-    [ ("x", vnms, "()")
-    , ("z", vnms, "()")
+    [ ("X.x", vnms, "()")
+    , ("X.z", vnms, "()")
     ]
   return (fileName, T.pack content)
 

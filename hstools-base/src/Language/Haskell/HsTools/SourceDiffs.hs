@@ -3,7 +3,7 @@
 
 module Language.Haskell.HsTools.SourceDiffs
   ( SourceDiffs, emptyDiffs, isEmptyDiffs, addExtraChange, createSourceDiffs
-  , originalToNewRange, originalToNewRangeStrict, originalToNewPos
+  , originalToNewRange, originalToNewRangeStrict, originalToNewRangeOptimist, originalToNewPos
   , newToOriginalRange, newToOriginalRangeStrict, newToOriginalPos
   , serializeSourceDiffs, deserializeSourceDiffs
   )
@@ -51,6 +51,14 @@ originalToNewRange diffs (Range start end) = Range newStart newEnd
   where
     newStart = either srStart id $ originalToNewPos diffs start
     newEnd = either srEnd id $ originalToNewPos diffs end
+
+originalToNewRangeOptimist :: SourceDiffs orig mod -> Range orig -> Maybe (Range mod)
+originalToNewRangeOptimist diffs (Range start end)
+  | newStart < newEnd = Just $ Range newStart newEnd
+  | otherwise = Nothing
+  where
+    newStart = either srEnd id $ originalToNewPos diffs start
+    newEnd = either srStart id $ originalToNewPos diffs end
 
 originalToNewRangeStrict :: SourceDiffs orig mod -> Range orig -> Maybe (Range mod)
 originalToNewRangeStrict diffs (Range start end)

@@ -55,8 +55,8 @@ lineToLoc :: (String, Int, Int, Int, Int) -> LspMonad (Maybe LSP.Location)
 lineToLoc (file, startLine, startCol, endLine, endCol) = do
   rewrites <- getRewrites file 
   return
-    $ fmap (LSP.Location (LSP.filePathToUri file) . rangeToLSP) 
-    $ originalToNewRangeStrict rewrites 
+    $ fmap (LSP.Location (LSP.filePathToUri file) . rangeToLSP)
+    $ originalToNewRangeOptimist rewrites 
     $ Range (SP startLine startCol) (SP endLine endCol)
 
 getRewrites :: FilePath -> LspMonad (SourceDiffs Original Modified)
