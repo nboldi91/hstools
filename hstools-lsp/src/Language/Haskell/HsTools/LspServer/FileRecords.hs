@@ -3,9 +3,9 @@
 module Language.Haskell.HsTools.LspServer.FileRecords where
 
 import Control.Concurrent.MVar
-import Control.Monad
 import qualified Data.Map as Map
 import qualified Data.Text as T
+import Data.Time.Clock
 import Database.PostgreSQL.Simple (Connection)
 
 import Language.Haskell.HsTools.Database
@@ -30,17 +30,13 @@ type FileRecords = MVar (Map.Map FilePath FileRecord)
 data Original
 data Modified
 
-recordFileOpened :: Connection -> FilePath -> T.Text -> FileRecords -> IO ()
-recordFileOpened conn fp content mv
+recordFileOpened :: Connection -> FilePath -> T.Text -> SourceDiffs Original Modified -> FileRecords -> IO ()
+recordFileOpened conn fp content diffs mv
   = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= \r -> return $ Map.alter (const r) fp frs
   where
-    updateRecord Nothing =
-      fmap (\(src, diffs) -> OpenFileRecord (deserializeSourceDiffs diffs) (toFileLines src) contentLines) 
-        <$> getCompiledSourceAndModifiedFileDiffs conn fp
-    updateRecord (Just (FileRecord diffs)) = do
-      compiledSource <- getCompiledSource conn fp
-      return $ fmap (\src -> OpenFileRecord diffs (toFileLines src) contentLines) compiledSource
-    updateRecord fileRecord = return fileRecord
+    updateRecord fileRecord@(Just OpenFileRecord{}) = return fileRecord
+    updateRecord _ =
+      fmap (\src -> OpenFileRecord diffs (toFileLines src) contentLines) <$> getCompiledSource conn fp
     contentLines = toFileLines $ T.unpack content
 
 recordFileClosed :: Connection -> FilePath -> FileRecords -> IO ()
@@ -75,15 +71,23 @@ isFileOpen fp frsMVar = do
     Just OpenFileRecord{} -> True
     _ -> False
 
-checkIfFilesHaveBeenChanged :: Connection -> IO [(String, SourceDiffs Original Modified)]
+checkIfFilesHaveBeenChanged :: Connection -> IO [(FilePath, SourceDiffs Original Modified)]
 checkIfFilesHaveBeenChanged conn = do 
   diffs <- getAllModifiedFileDiffs conn
-  forM diffs $ \(filePath, diff, modifiedTime) -> do
-    modificationTime <- getFileModificationTime filePath
-    case (modifiedTime, modificationTime) of
-      (Just recTime, Just modTime) | recTime < modTime -> updateDiffs filePath modTime
-      (Nothing, Just modTime) -> updateDiffs filePath modTime
-      _ -> return (filePath, maybe emptyDiffs deserializeSourceDiffs diff)
+  mapM (checkFileHaveBeenChanged conn) diffs
+  
+checkIfFileHaveBeenChanged :: Connection -> FilePath -> IO (SourceDiffs Original Modified)
+checkIfFileHaveBeenChanged conn fp = do
+  (diffs, time) <- getModifiedTimeAndFileDiffs conn fp
+  snd <$> checkFileHaveBeenChanged conn (fp, diffs, time)
+
+checkFileHaveBeenChanged :: Connection -> (FilePath, Maybe String, Maybe UTCTime) -> IO (FilePath, SourceDiffs Original Modified)
+checkFileHaveBeenChanged conn (filePath, diff, modifiedTime) = do
+  modificationTime <- getFileModificationTime filePath
+  case (modifiedTime, modificationTime) of
+    (Just recTime, Just modTime) | recTime < modTime -> updateDiffs filePath modTime
+    (Nothing, Just modTime) -> updateDiffs filePath modTime
+    _ -> return (filePath, maybe emptyDiffs deserializeSourceDiffs diff)
   where
     updateDiffs filePath modificationTime = do
       fileContent <- readFileContent filePath

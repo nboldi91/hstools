@@ -55,13 +55,13 @@ getCompiledSource :: Connection -> FilePath -> IO (Maybe String)
 getCompiledSource conn filePath
   = fmap (fmap head . listToMaybe) $ query conn "SELECT compiledSource FROM modules WHERE filePath = ? AND compiledSource IS NOT NULL" (Only filePath)
 
+getModifiedTimeAndFileDiffs :: Connection -> FilePath -> IO (Maybe String, Maybe UTCTime)
+getModifiedTimeAndFileDiffs conn filePath =
+  fromMaybe (Nothing, Nothing) . listToMaybe <$> query conn "SELECT modifiedFileDiffs, modifiedTime FROM modules WHERE filePath = ?" (Only filePath)
+
 getModifiedFileDiffs :: Connection -> FilePath -> IO (Maybe String)
 getModifiedFileDiffs conn filePath
   = fmap (fmap head . listToMaybe) $ query conn "SELECT modifiedFileDiffs FROM modules WHERE filePath = ? AND modifiedFileDiffs IS NOT NULL" (Only filePath)
-
-getCompiledSourceAndModifiedFileDiffs :: Connection -> FilePath -> IO (Maybe (String, String))
-getCompiledSourceAndModifiedFileDiffs conn filePath
-  = fmap listToMaybe $ query conn "SELECT compiledSource, modifiedFileDiffs FROM modules WHERE filePath = ? AND compiledSource IS NOT NULL AND modifiedFileDiffs IS NOT NULL" (Only filePath)
 
 insertModule :: Connection -> FilePath -> UTCTime -> String -> String -> String -> IO Int
 insertModule conn fullPath roundedModificationTime moduleName unitId content

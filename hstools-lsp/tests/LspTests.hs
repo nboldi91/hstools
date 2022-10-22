@@ -170,6 +170,26 @@ test_rewriteSaved = useTestRepo $ \conn -> do
       definition <- getDefinitions doc (Position 0 8)
       liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
 
+-- the file was modified during the current session, but we did not get notified
+test_didNotNotify :: Assertion
+test_didNotNotify = useTestRepo $ \conn -> do 
+  initializeTables conn
+  (fileName, fileContent) <- setupSimpleTestFile conn
+  fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
+  withTestFile fullFilePath (unlines ["x = y", "y = ()"]) $ runTest $ do
+    doc@(TextDocumentIdentifier uri) <- openDoc fileName "haskell"
+    definition <- getDefinitions doc (Position 0 5)
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 1 0) (Position 1 1)]) definition
+    closeDoc doc
+
+    liftIO $ writeFile fullFilePath (unlines ["x = y", "", "y = ()"])   
+    currentTime <- liftIO getCurrentTime
+    liftIO $ setModificationTime fullFilePath (addUTCTime 1 currentTime)
+
+    doc@(TextDocumentIdentifier uri) <- openDoc fileName "haskell"
+    definition <- getDefinitions doc (Position 0 5)
+    liftIO $ assertEqual (InL [Location uri $ LSP.Range (Position 2 0) (Position 2 1)]) definition
+
 ------------------------------------------------------------------------------------------------
 
 setupSimpleTestFile :: Connection -> IO (FilePath, T.Text)

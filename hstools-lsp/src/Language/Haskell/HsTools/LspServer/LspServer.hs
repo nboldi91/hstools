@@ -176,7 +176,9 @@ handlers = mconcat
   , notificationHandler STextDocumentDidOpen $ \msg -> handlerCtx "STextDocumentDidOpen" $ \conn -> do
       let NotificationMessage _ _ (DidOpenTextDocumentParams (TextDocumentItem uri _langId _version content)) = msg
       ensureFileLocation uri $ \filePath ->
-        liftLSP LSP.getConfig >>= \cf -> liftIO $ recordFileOpened conn filePath content (cfFileRecords cf)
+        liftLSP LSP.getConfig >>= \cf -> liftIO $ do
+          diffs <- checkIfFileHaveBeenChanged conn filePath
+          recordFileOpened conn filePath content diffs (cfFileRecords cf)
   
   , notificationHandler STextDocumentDidClose $ \msg -> handlerCtx "STextDocumentDidClose" $ \conn -> do
       let NotificationMessage _ _ (DidCloseTextDocumentParams (TextDocumentIdentifier uri)) = msg
