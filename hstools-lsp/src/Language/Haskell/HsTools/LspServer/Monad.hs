@@ -1,9 +1,11 @@
 module Language.Haskell.HsTools.LspServer.Monad where
 
 import Control.Concurrent.MVar
+import Control.Monad.Catch
 import Control.Monad.Reader
 import qualified Data.Map as Map
 import qualified Data.Text as T
+import Data.Time.Clock
 import Database.PostgreSQL.Simple (Connection)
 import Language.LSP.Server as LSP
 import Language.LSP.Types as LSP
@@ -11,7 +13,7 @@ import Language.LSP.Types as LSP
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.SourceDiffs
-import Language.Haskell.HsTools.HandleErrors
+import Language.Haskell.HsTools.Database
 
 data LspContext = LspContext { ctOperation :: String }
 
@@ -65,4 +67,11 @@ logMessage = liftLSP . sendNotification SWindowLogMessage . LogMessageParams MtI
 handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
 handleErrorsCtx conn action = do
   operation <- asks ctOperation
-  handleErrors conn ("During operation " ++ operation) action
+  lspHandleErrors conn operation action
+
+lspHandleErrors :: Connection -> String -> LspMonad () -> LspMonad ()
+lspHandleErrors conn ctx = flip catch $ \e -> do
+  time <- liftIO getCurrentTime
+  sendError $ T.pack $ "Error during " ++ ctx ++ ": " ++ show e 
+  liftIO $ logErrorMessage conn time ctx (show (e :: SomeException))
+

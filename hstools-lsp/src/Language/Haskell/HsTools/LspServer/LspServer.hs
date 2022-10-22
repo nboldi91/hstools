@@ -40,7 +40,6 @@ import Language.Haskell.HsTools.LspServer.Notifications
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.SourcePosition as SP
-import Language.Haskell.HsTools.HandleErrors
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.Utils
 
@@ -208,7 +207,7 @@ tryToConnectToDB = do
   config <- liftLSP LSP.getConfig
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
-    Right conn -> handleErrors conn "tryToConnectToDB" $ do 
+    Right conn -> lspHandleErrors conn "tryToConnectToDB" $ do 
       liftIO $ reinitializeTablesIfNeeded conn
       modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged conn
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs

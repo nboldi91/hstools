@@ -46,6 +46,7 @@ library:
     - time
     - co-log-core
     - prettyprinter
+    - exceptions
   ghc-options:
     - -W
     - -Werror
