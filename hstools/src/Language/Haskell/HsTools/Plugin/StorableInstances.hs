@@ -694,6 +694,9 @@ instance Storable a r => Storable (Maybe a) r where
 instance (Storable a r, Storable b r) => Storable (a, b) r where
     store (a, b) = store a >> store b
 
+instance (Storable a r, Storable b r, Storable c r) => Storable (a, b, c) r where
+    store (a, b, c) = store a >> store b >> store c
+
 instance Storable a r => Storable (HsWildCardBndrs (GhcPass p) a) r where
     store = store . hswc_body
 

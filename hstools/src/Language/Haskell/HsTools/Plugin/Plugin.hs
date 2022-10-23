@@ -85,7 +85,9 @@ parsedAction clOpts ms mod = liftIO $ do
 
 renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction clOpts env group = do
-  runStage clOpts "rename" (<= NamesLoaded) NamesLoaded (flip storeNames group)
+  let exports = maybe [] (map fst) $ tcg_rn_exports env
+  let imports = tcg_rn_imports env
+  runStage clOpts "rename" (<= NamesLoaded) NamesLoaded (flip storeNames (exports, imports, group))
   return (env, group)
 
 typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv

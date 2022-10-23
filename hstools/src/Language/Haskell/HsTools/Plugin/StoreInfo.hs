@@ -29,6 +29,7 @@ import HsDecls
 import HscTypes
 import HsExpr
 import HsExtension
+import HsImpExp
 import SrcLoc
 import TcRnTypes
 import UniqFM
@@ -66,15 +67,15 @@ storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
       Just (moduleId, astId :: Int, mn, Just $ fromEnum ModuleNS, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
     convertName _ = Nothing
 
-storeNames :: StoreParams -> HsGroup GhcRn -> IO ()
+storeNames :: StoreParams -> ([Located (IE GhcRn)], [LImportDecl GhcRn], HsGroup GhcRn) -> IO ()
 storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
-    context <- defaultStoreContext conn moduleId moduleName Nothing
-    ((), names) <- runWriterT (runReaderT (store gr) context)
-    let uniqueNames = nub $ sort names
-    when isVerbose $ do
-      putStrLn "### Storing names:"
-      mapM_ print uniqueNames
-    persistNames conn moduleId uniqueNames
+  context <- defaultStoreContext conn moduleId moduleName Nothing
+  ((), names) <- runWriterT (runReaderT (store gr) context)
+  let uniqueNames = nub $ sort names
+  when isVerbose $ do
+    putStrLn "### Storing names:"
+    mapM_ print uniqueNames
+  persistNames conn moduleId uniqueNames
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do
@@ -88,17 +89,17 @@ persistNames conn moduleId names = do
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
-    context <- defaultStoreContext conn moduleId moduleName Nothing
-    -- putStrLn $ show $ tcg_binds env
-    let storeEnv = do
-          store $ tcg_binds env
-          store $ eltsUFM $ tcg_type_env env
-    ((), types) <- runWriterT (runReaderT storeEnv context)
-    let uniqueTypes = nub $ sort types
-    when isVerbose $ do
-      putStrLn "### Storing types:"
-      mapM_ print uniqueTypes
-    persistTypes conn (map convertType uniqueTypes)
+  context <- defaultStoreContext conn moduleId moduleName Nothing
+  -- putStrLn $ show $ tcg_binds env
+  let storeEnv = do
+        store $ tcg_binds env
+        store $ eltsUFM $ tcg_type_env env
+  ((), types) <- runWriterT (runReaderT storeEnv context)
+  let uniqueTypes = nub $ sort types
+  when isVerbose $ do
+    putStrLn "### Storing types:"
+    mapM_ print uniqueTypes
+  persistTypes conn (map convertType uniqueTypes)
   where
     convertType (TypeRecord name namespace typ) = (name, fmap fromEnum namespace, typ)
 

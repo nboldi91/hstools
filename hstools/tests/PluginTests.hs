@@ -165,6 +165,17 @@ test_importedFunction = useTestRepo $ \conn -> do
   gsubAssert $ assertHasName names (3, 1, Global "X.x", "[Char]", Definition)
   gsubAssert $ assertHasName names (3, 5, Global "Data.OldList.intercalate", "forall a. [a] -> [[a]] -> [a]", Use)
 
+test_importExports :: Assertion
+test_importExports = useTestRepo $ \conn -> do
+  withTestFileLines testFile ["module X where", "import Y (y)", "x = y"] $ withTestFileLines "Y.hs" ["module Y (y) where", "y = ()"] (runGhcTest conn)
+  names <- getAllNames conn
+  gsubAssert $ assertHasNameNoType names (1, 8, Global "X", Definition)
+  gsubAssert $ assertHasNameNoType names (1, 8, Global "Y", Definition)
+  gsubAssert $ assertHasNameNoType names (2, 8, Global "Y", Use)
+  gsubAssert $ assertHasName names (2, 11, Global "Y.y", "()", Use)
+  -- TODO: somehow exports cannot be found
+  -- gsubAssert $ assertHasName names (1, 11, Global "Y.y", "()", Use)
+
 -----------------------------------------
 --- technical test cases
 
