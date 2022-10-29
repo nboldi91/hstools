@@ -54,7 +54,7 @@ markFileRecordsClean files = modifyMVarPure
       . (`Map.union` (Map.fromList $ map (, FileRecord emptyDiffs) files)))
 
 updateSavedFileRecords :: FilePath -> [Rewrite Modified] -> FileRecords -> IO ()
-updateSavedFileRecords fp newDiffs = modifyMVarPure $ \fr -> Map.adjust updateDiffs fp fr
+updateSavedFileRecords fp newDiffs = modifyMVarPure $ Map.adjust updateDiffs fp
   where
     updateDiffs (OpenFileRecord diffs compiledContent currentContent) =
       let (currentContent', diffs') = foldr (addExtraChange compiledContent) (currentContent, diffs) newDiffs

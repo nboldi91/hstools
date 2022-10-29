@@ -86,3 +86,11 @@ test_addRewrite_revertDeletion
           (FileLines [" x = a"])
           (Rewrite (deserializeRange "1:1-1:1") " ")
           (FileLines ["x = a"], deserializeSourceDiffs "1:1-1:2 -> 1:1-1:1")
+
+test_addRewrite_simplified :: Assertion
+test_addRewrite_simplified
+  = assertEqual ( FileLines ["xy = a"], deserializeSourceDiffs "1:2-1:2 -> 1:2-1:3" )
+      $ addExtraChange
+          (FileLines ["x = a"])
+          (Rewrite (deserializeRange "1:1-1:4") "xy =")
+          (FileLines ["x = a"], deserializeSourceDiffs "")

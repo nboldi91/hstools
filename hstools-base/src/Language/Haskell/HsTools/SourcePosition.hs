@@ -29,6 +29,9 @@ rangeContain pos (Range start end) = start <= pos && pos <= end
 rangeHeight :: Range a -> Int
 rangeHeight (Range start end) = spLine end - spLine start
 
+isEmptyRange :: Range a -> Bool
+isEmptyRange (Range start end) = start == end
+
 concatRanges :: [Range a] -> Range a
 concatRanges [] = error "concatRanges: empty"
 concatRanges rngs = Range (minimum $ map srStart rngs) (maximum $ map srEnd rngs)

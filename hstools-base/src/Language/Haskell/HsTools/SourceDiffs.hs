@@ -115,15 +115,16 @@ addExtraChange :: FileLines -> Rewrite mod -> (FileLines, SourceDiffs orig mod) 
 addExtraChange compiledContent rewrite@(Rewrite modRange replacement) (actualContent, diffs) = (newContent, newDiffs)
   where
     newDiffs
-      = if isEmptyDiffs affectedDiffs
+      = if not isComplexDiff && isEmptyDiffs affectedDiffs
           then adjustDiff modRange newRange diffs `unionDiffs` singletonDiffs origRange newRange
-          else beforeDiffs `unionDiffs` adjustedAfterDiffs `unionDiffs` reDiffs 
+          else beforeDiffs `unionDiffs` adjustedAfterDiffs `unionDiffs` reDiffs   
+    isComplexDiff = length replacement > 1 || (length replacement >= 1 && not (isEmptyRange modRange))
     adjustedAfterDiffs
-      = maybe id (\(SrcDiff from to) -> adjustDiff from to) lastReDiff
-        $ adjustDiff lastAffectedDiffTo lastAffectedDiffFrom afterDiffs
+      = maybe id (\(SrcDiff from to) -> adjustDiff from to) lastReDiff $ adjustByLastAffectedDiff afterDiffs
+    adjustByLastAffectedDiff = maybe id (\d -> adjustDiff (sdTo d) (sdFrom d)) lastAffectedDiffMaybe
     lastReDiff = fmap (castSrcDiff . fst) $ Map.maxView $ modKeyedMap reDiffs
-    SrcDiff lastAffectedDiffFrom lastAffectedDiffTo
-      = castSrcDiff $ fst $ fromMaybe (error "addExtraChange: lastAffectedDiff is empty") $ Map.maxView $ modKeyedMap affectedDiffs
+    lastAffectedDiffMaybe
+      = fmap (castSrcDiff . fst) $ Map.maxView $ modKeyedMap affectedDiffs
     reDiffs = createSourceDiffs
                 (srStart origRangeToReDiff)
                 (srStart newestRangeToReDiff)
