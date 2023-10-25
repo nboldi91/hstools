@@ -68,13 +68,15 @@ insertModule conn fullPath roundedModificationTime moduleName unitId content
   = head . head <$> query conn "INSERT INTO modules (filePath, compiledTime, moduleName, unitId, loadingState, compiledSource, modifiedTime, modifiedFileDiffs) VALUES (?, ?, ?, ?, 0, ?, null, null) RETURNING moduleId"
       (fullPath, roundedModificationTime, moduleName, unitId, content)
 
-getAstNodes :: Connection -> Int -> IO [(Int, Int, Int, Int, Int)]
+type AstNode = (Int, Int, Int, Int, Int)
+
+getAstNodes :: Connection -> Int -> IO [AstNode]
 getAstNodes conn moduleId = query conn "SELECT startRow, startColumn, endRow, endColumn, astId FROM ast WHERE module = ?" (Only moduleId)
 
 getAllNames :: Connection -> IO [(Int, Int, String, Maybe String, Bool)]
 getAllNames conn = query_ conn "SELECT startRow, startColumn, name, type, isDefined FROM ast AS n JOIN names nn ON nn.astNode = n.astId LEFT JOIN types tt ON tt.typedName = nn.name AND tt.typeNamespace = nn.namespace ORDER BY startRow, startColumn"
 
-persistAst :: Connection -> [(Int, Int, Int, Int, Int)] -> IO [Int]
+persistAst :: Connection -> [AstNode] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn "INSERT INTO ast (module, startRow, startColumn, endRow, endColumn) VALUES (?, ?, ?, ?, ?) RETURNING astId" asts
 
 persistDefinitions :: Connection -> [(Int, Int, DefinitionKind)] -> IO [Int]
@@ -103,6 +105,60 @@ getAllMains conn = query_ conn "SELECT name FROM mains"
 
 getAllDefinitions :: Connection -> IO [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
 getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn AND a.endRow = n.namedDefinitionEndRow AND a.endColumn = n.namedDefinitionEndColumn ORDER BY startRow, startColumn"
+
+getAllDefinitionNodes :: Connection -> IO [[String]] -- not sure why this is list of strings
+getAllDefinitionNodes conn = query_ conn
+  [sql| 
+    SELECT n.name || '@' || n.namespace
+    FROM public.names n
+    WHERE n.isdefined = true
+    AND n.name not like '%:%'
+  |]
+
+getNamesUsedInDefinitions :: Connection -> IO [(String, Int, Int, Int, Int, Int)]
+getNamesUsedInDefinitions conn = query_ conn
+  [sql| 
+    SELECT DISTINCT usedName.name || '@' || usedName.namespace as "used", defAst.module, defAst.startRow, defAst.startColumn, defAst.endRow, defAst.endColumn
+    FROM public.names usedName
+    JOIN public.ast nameAst
+      ON usedName.astNode = nameAst.astId
+    JOIN public.ast defAst
+      ON defAst.module = nameAst.module
+      AND (defAst.startRow < nameAst.startRow OR (defAst.startRow = nameAst.startRow AND defAst.startColumn <= nameAst.startColumn)) 
+      AND (defAst.endRow > nameAst.endRow OR (defAst.endRow = nameAst.endRow AND defAst.endColumn >= nameAst.endColumn)) 
+    JOIN public.definitions def
+      ON def.astNode = defAst.astId
+    WHERE
+      usedName.name not like '%:%' -- we are not interested in local names
+      AND usedName.isDefined = false
+      AND def.parentDefinition IS NULL
+      AND user IS NOT NULL
+      -- we are only interested in names that we have defined
+      AND EXISTS (
+        SELECT 1
+        FROM public.names definingName
+        WHERE definingName.name = usedName.name
+        AND definingName.namespace = usedName.namespace
+        AND definingName.isDefined = true
+      )
+  |]
+
+getNameOfDefinition :: Connection -> AstNode -> IO [[String]]
+getNameOfDefinition conn (a,b,c,d,e) = query conn
+  [sql|
+      SELECT definedName.name || '@' || definedName.namespace
+      FROM public.names definedName
+      JOIN public.ast defNameAst
+      ON definedName.astNode = defNameAst.astId
+      WHERE definedName.isDefined = true
+      AND definedName.name not like '%:%'
+      AND ? = defNameAst.module
+      AND (? < defNameAst.startRow OR (? = defNameAst.startRow AND ? <= defNameAst.startColumn)) 
+      AND (? > defNameAst.endRow OR (? = defNameAst.endRow AND ? >= defNameAst.endColumn))
+      ORDER BY defNameAst.startRow, defNameAst.startColumn
+      LIMIT 1
+  |]
+  (a,b,b,c,d,d,e)
 
 getTHRanges :: Connection -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId

@@ -31,6 +31,7 @@ library:
     - Language.Haskell.HsTools.LspServer.FileRecords
     - Language.Haskell.HsTools.LspServer.Notifications
     - Language.Haskell.HsTools.LspServer.Monad
+    - Language.Haskell.HsTools.LspServer.Operations.FindUnusedDefinitions
   dependencies:
     - containers
     - hstools-base

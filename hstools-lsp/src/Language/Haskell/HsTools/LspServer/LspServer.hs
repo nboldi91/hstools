@@ -25,6 +25,8 @@ import Database.PostgreSQL.Simple (connectPostgreSQL, close)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Vector as V
+import qualified Data.List as L
+import Data.Function (on)
 import Control.Concurrent (forkIO)
 import Control.Concurrent.Chan
 import Control.Concurrent.MVar
@@ -37,6 +39,7 @@ import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.LspServer.Monad
 import Language.Haskell.HsTools.LspServer.Notifications
+import Language.Haskell.HsTools.LspServer.Operations.FindUnusedDefinitions
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.SourcePosition as SP
@@ -140,6 +143,21 @@ handlers = mconcat
         _ -> sendError $ T.pack $ "Unrecognized CleanDB argument: " ++ show args
       updateFileStates
 
+  -- TODO: it should be a request
+  , requestHandler (SCustomMethod "FindUnused") $ \_ responder -> handlerCtx "FindUnused" $ \conn -> do
+      mains <- liftIO $ getAllMains conn
+      sendMessage $ T.pack $ "### mains: " ++ show mains
+      definitionsListList <- liftIO $ getAllDefinitionNodes conn
+      let definitions = concat definitionsListList
+      sendMessage $ T.pack ("### definitions: " ++ show (L.length definitions) ++ take 20 (show definitions))
+      references <- liftIO $ getNamesUsedInDefinitions conn
+      sendMessage $ T.pack ("### references: " ++ show (L.length references) ++ take 20 (show references))
+      let refs = zip [1..] $ L.groupBy ((==) `on` fst) $ L.sortOn fst $ map (\(n,a,b,c,d,e) -> ((a,b,c,d,e), n)) references
+      connections <- (concat . concat <$> mapM (\(i, pairs) -> map (map (, map snd pairs)) <$> ((if i `mod` 1000 == 0 then sendMessage $ T.pack "### 1000" else return ()) >> liftIO (getNameOfDefinition conn (fst $ head pairs)))) refs)
+      sendMessage $ T.pack ("### connections: " ++ show (L.length connections) ++ take 20 (show connections))
+      -- this is a hack because I cannot get the main functions right now (mains is empty)
+      liftLSP $ responder $ Right $ A.String $ T.pack $ unlines $ (findUnused (concat mains ++ filter (".main@3" `L.isSuffixOf`) definitions) definitions connections)
+
   , notificationHandler SWorkspaceDidChangeWatchedFiles $ \message -> handlerCtx "FileChange" $ \conn -> do
       let NotificationMessage _ _ (DidChangeWatchedFilesParams (LSP.List fileChanges)) = message
       forM_ fileChanges $ \(FileEvent uri _) -> ensureFileLocation uri $ \filePath -> do
@@ -225,7 +243,7 @@ tryToConnectToDB = do
 
 hstoolsOptions :: Options
 hstoolsOptions = defaultOptions
-  { executeCommandCommands = Just ["cleanDB"]
+  { executeCommandCommands = Just ["CleanDB", "FindUnused"]
   , textDocumentSync = Just syncOptions
   }
   where

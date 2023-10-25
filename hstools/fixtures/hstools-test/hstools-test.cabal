@@ -1,6 +1,6 @@
 cabal-version: 1.12
 
--- This file has been generated from package.yaml by hpack version 0.34.4.
+-- This file has been generated from package.yaml by hpack version 0.35.2.
 --
 -- see: https://github.com/sol/hpack
 
@@ -32,4 +32,17 @@ library
       base >=4.7 && <5
     , hstools
     , lens
+  default-language: Haskell2010
+
+executable hstools-test
+  main-is: Main.hs
+  other-modules:
+      Paths_hstools_test
+  hs-source-dirs:
+      app
+  ghc-options: -fplugin=Language.Haskell.HsTools.Plugin -fplugin-opt=Language.Haskell.HsTools.Plugin:postgresql://saver:saver@127.0.0.1:5432/repo -fplugin-opt=Language.Haskell.HsTools.Plugin:verbose
+  build-depends:
+      base >=4.7 && <5
+    , hstools
+    , hstools-test
   default-language: Haskell2010
