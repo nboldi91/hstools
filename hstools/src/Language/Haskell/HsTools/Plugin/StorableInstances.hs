@@ -6,7 +6,7 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE ViewPatterns #-}
 
-module Language.Haskell.HsTools.Plugin.StorableInstances () where
+module Language.Haskell.HsTools.Plugin.StorableInstances where
 
 import Control.Monad.Reader
 import Control.Monad.Writer

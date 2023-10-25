@@ -30,6 +30,7 @@ import HscTypes
 import HsExpr
 import HsExtension
 import HsImpExp
+import Name
 import SrcLoc
 import TcRnTypes
 import UniqFM
@@ -37,7 +38,7 @@ import UniqFM
 import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Plugin.Storable
-import Language.Haskell.HsTools.Plugin.StorableInstances ()
+import Language.Haskell.HsTools.Plugin.StorableInstances (generateFullName)
 import Language.Haskell.HsTools.Plugin.StoreComments
 import Language.Haskell.HsTools.Database
 
@@ -76,6 +77,13 @@ storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
     putStrLn "### Storing names:"
     mapM_ print uniqueNames
   persistNames conn moduleId uniqueNames
+
+storeMain :: StoreParams -> Maybe Name -> IO ()
+storeMain (StoreParams isVerbose conn (moduleName, moduleId)) (Just nm) = do
+  when isVerbose $ do
+    putStrLn $ "### Storing main: " ++ show nm
+  persistMain conn moduleId (generateFullName moduleName nm)
+storeMain _ Nothing = return ()
 
 persistNames :: Connection -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do

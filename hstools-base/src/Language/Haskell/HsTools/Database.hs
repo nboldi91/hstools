@@ -95,6 +95,12 @@ persistComments conn comments = void $ executeMany conn "INSERT INTO comments (m
 getAllComments :: Connection -> IO [(Int, Int, String)]
 getAllComments conn = query_ conn "SELECT startRow, startColumn, commentText FROM ast a JOIN comments c ON c.targetDefinition = a.astId ORDER BY startRow, startColumn"
 
+persistMain :: Connection -> Int -> String -> IO ()
+persistMain conn mod nm = void $ execute conn "INSERT INTO mains (module, name) VALUES (?, ?)" (mod, nm)
+
+getAllMains :: Connection -> IO [[String]] -- not sure why this is list of strings
+getAllMains conn = query_ conn "SELECT name FROM mains"
+
 getAllDefinitions :: Connection -> IO [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
 getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn AND a.endRow = n.namedDefinitionEndRow AND a.endColumn = n.namedDefinitionEndColumn ORDER BY startRow, startColumn"
 
@@ -173,6 +179,7 @@ cleanModulesFromDB conn filePath = do
 
 cleanRelatedData :: Connection -> Int -> IO ()
 cleanRelatedData conn moduleId = void $ do
+  execute conn "DELETE FROM mains WHERE module = ?" [moduleId]
   execute conn "DELETE FROM definitions WHERE module = ?" [moduleId]
   execute conn "DELETE FROM comments WHERE module = ?" [moduleId]
   execute conn "DELETE FROM names WHERE module = ?" [moduleId]
@@ -197,7 +204,7 @@ initializeTables :: Connection -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 5
+databaseSchemaVersion = 6
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -275,6 +282,11 @@ databaseSchema = [sql|
     ( module INT NOT NULL
     , astNode INT NOT NULL
     , CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
+    );
+
+  CREATE TABLE mains 
+    ( module INT NOT NULL
+    , name TEXT NOT NULL
     );
 
   CREATE OR REPLACE FUNCTION notifyModulesFunction()
