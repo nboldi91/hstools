@@ -9,6 +9,21 @@ import Database.PostgreSQL.Simple
 import System.Directory
 import System.FilePath
 
+-- | Verbosity level (common option between plugin and server)
+data Verbosity = VerbositySilent | VerbosityVerbose | VerbosityDebug
+  deriving (Eq, Ord, Show, Read)
+
+-- | Everything we need for running database operations
+data DbConn = DbConn { dbConnLogger :: String -> IO (), dbConnConnection :: Connection } 
+
+-- | Logger that logs to standard output (used for plugin) 
+debugStdOutLogger :: Verbosity -> (String -> IO ())
+debugStdOutLogger verbosity = if verbosity >= VerbosityDebug then putStrLn else const (return ())
+
+-- | Logger that logs to a specified file (used by server)
+debugFileLogger :: FilePath -> Verbosity -> (String -> IO ())
+debugFileLogger logFile verbosity = if verbosity >= VerbosityDebug then appendFile logFile . (++"\n") else const (return ())
+
 readFileContent :: FilePath -> IO (Maybe String)
 readFileContent filePath = do
   fileExists <- doesFileExist filePath
@@ -38,7 +53,7 @@ writeFileSafe filePath content = do
   createDirectoryIfMissing True (takeDirectory filePath)
   writeFile filePath content
 
-withTestRepo :: String -> String -> (Connection -> IO ()) -> IO ()
+withTestRepo :: String -> String -> (DbConn -> IO ()) -> IO ()
 withTestRepo baseConnString dbName test = do 
   conn <- connectPostgreSQL (BS.pack $ baseConnString ++ "/postgres")
   createAndRun conn `finally` (execute_ conn (fromString $ "DROP DATABASE IF EXISTS " ++ dbName))
@@ -46,5 +61,5 @@ withTestRepo baseConnString dbName test = do
     createAndRun conn = void $ do
       execute_ conn (fromString $ "CREATE DATABASE " ++ dbName) 
       testConn <- connectPostgreSQL (BS.pack $ baseConnString ++ "/" ++ dbName)
-      test testConn
+      test (DbConn (debugStdOutLogger VerbositySilent) testConn)
       close testConn

@@ -4,12 +4,12 @@ module Language.Haskell.HsTools.Plugin.Monad where
 
 import Control.Monad.Reader
 import Control.Monad.Writer
-import Database.PostgreSQL.Simple (Connection)
 import Data.Maybe
 
 import SrcLoc
 
 import Language.Haskell.HsTools.Plugin.Types
+import Language.Haskell.HsTools.Utils (DbConn)
 import Language.Haskell.HsTools.Database
 
 type StoreM r = ReaderT (StoreContext r) (WriterT [r] IO)
@@ -67,7 +67,7 @@ currentPos st = do
     Just np -> st np
     Nothing -> return ()
 
-defaultStoreContext :: Connection -> Int -> String -> Maybe SrcSpan -> IO (StoreContext r)
+defaultStoreContext :: DbConn -> Int -> String -> Maybe SrcSpan -> IO (StoreContext r)
 defaultStoreContext conn moduleId moduleName modSpan = do
   thSpans <- getTHRanges conn moduleId
   return $ StoreContext

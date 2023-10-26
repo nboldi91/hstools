@@ -6,6 +6,7 @@ import Name
 import SrcLoc
 
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.Utils (Verbosity(..), DbConn(..), debugStdOutLogger)
 
 data ParseRecord
   = ParseDefinitionRecord
@@ -50,10 +51,13 @@ data NameAndTypeRecord = NameAndTypeRecord
   } deriving (Show, Eq, Ord)
 
 data StoreParams = StoreParams
-  { spIsVerbose :: Bool
+  { spVerbosity :: Verbosity
   , spConnection :: Connection
   , spModule :: (String, Int)
   }
+
+storeParamsDbConn :: StoreParams -> DbConn
+storeParamsDbConn sp = DbConn (debugStdOutLogger $ spVerbosity sp) (spConnection sp)
 
 instance Show NodePos where
   show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec

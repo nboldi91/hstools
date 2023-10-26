@@ -16,6 +16,7 @@ import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.SourcePosition
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.Utils (Verbosity(..), DbConn(..), debugFileLogger)
 
 data LspContext = LspContext { ctOperation :: String }
 
@@ -25,13 +26,17 @@ liftLSP :: LspM Config a -> LspMonad a
 liftLSP = lift
 
 runInContext :: String -> LspMonad a -> LspM Config a
-runInContext operation action = runReaderT action (LspContext { ctOperation = operation })
+runInContext operation action = do 
+  cf <- LSP.getConfig
+  when (cfVerbosity cf >= VerbosityVerbose) $
+    liftIO $ appendFile (cfLogFilePath cf) $ "# Start operation: " ++ operation ++ "\n"
+  runReaderT action (LspContext { ctOperation = operation })
 
-withConnection :: (Connection -> LspMonad ()) -> LspMonad ()
+withConnection :: (DbConn -> LspMonad ()) -> LspMonad ()
 withConnection act = do
   operation <- asks ctOperation
-  cfg <- lift LSP.getConfig
-  case cfConnection cfg of
+  conn <- getDbConn
+  case conn of
     Just conn -> act conn
     Nothing -> sendError $ T.pack $ operation ++ " needs DB connection"
 
@@ -73,6 +78,11 @@ sendError = liftLSP . sendNotification LSP.SWindowShowMessage . LSP.ShowMessageP
 
 logMessage :: T.Text -> LspMonad ()
 logMessage = liftLSP . sendNotification LSP.SWindowLogMessage . LSP.LogMessageParams LSP.MtInfo
+
+getDbConn :: LspMonad (Maybe DbConn)
+getDbConn = do 
+  config <- LSP.getConfig
+  return $ fmap (DbConn (debugFileLogger (cfLogFilePath config) (cfVerbosity config))) $ cfConnection config
 
 handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
 handleErrorsCtx conn action = do

@@ -186,7 +186,7 @@ handlers = mconcat
         liftLSP LSP.getConfig >>= \cf -> liftIO $ recordFileClosed conn filePath (cfFileRecords cf)
   ]
 
-handlerCtx ctx action = runInContext ctx $ withConnection $ \conn -> handleErrorsCtx conn $ action conn
+handlerCtx ctx action = runInContext ctx $ withConnection $ \conn -> handleErrorsCtx (dbConnConnection conn) $ action conn
 
 updateFileStates :: LspMonad ()
 updateFileStates = do
@@ -212,14 +212,15 @@ tryToConnectToDB = do
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
     Right conn -> lspHandleErrors conn "tryToConnectToDB" $ do 
-      liftIO $ reinitializeTablesIfNeeded conn
-      modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged conn
+      let dbConn = DbConn (debugFileLogger (cfLogFilePath config) $ cfVerbosity config) conn
+      liftIO $ reinitializeTablesIfNeeded dbConn
+      modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged dbConn
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
       liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
       liftLSP $ LSP.setConfig $ config { cfConnection = Just conn }
       updateFileStates
       env <- getLspEnv
-      liftIO $ listenToModuleClean conn
+      liftIO $ listenToModuleClean dbConn
       void $ liftIO $ forkIO (handleNotifications conn (cfFileRecords config) (resSendMessage env))
     Left (_ :: SomeException) -> return () -- error is OK
 

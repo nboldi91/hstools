@@ -22,7 +22,6 @@ import Control.Monad.Reader
 import Data.Maybe
 import qualified Data.Map as Map
 import Data.List
-import Database.PostgreSQL.Simple (Connection)
 
 import ApiAnnotation
 import HsDecls
@@ -41,18 +40,20 @@ import Language.Haskell.HsTools.Plugin.Storable
 import Language.Haskell.HsTools.Plugin.StorableInstances (generateFullName)
 import Language.Haskell.HsTools.Plugin.StoreComments
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.Utils (DbConn, Verbosity(..))
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
 
 storeParsed :: StoreParams -> HsParsedModule -> IO ()
-storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
-    let modEnd = listToMaybe =<< Map.lookup (noSrcSpan, AnnEofPos) (fst $ hpm_annotations md)
+storeParsed sp@(StoreParams verbosity _ (moduleName, moduleId)) md = do
+    let conn = storeParamsDbConn sp
+        modEnd = listToMaybe =<< Map.lookup (noSrcSpan, AnnEofPos) (fst $ hpm_annotations md)
         modSpan = maybe id combineSrcSpans modEnd $ getLoc $ hpm_module md
         storeModule = storeLoc store (L modSpan (unLoc $ hpm_module md))
     context <- defaultStoreContext conn moduleId moduleName (Just modSpan)
     ((), defs) <- runWriterT (runReaderT storeModule context)
     let sortedDefs = nub $ sort defs
-    when isVerbose $ do
+    when (verbosity >= VerbosityVerbose) $ do
       putStrLn "### Storing ast definitions:"
       mapM_ print sortedDefs
     astIds <- persistAst conn (map convertLocation sortedDefs)
@@ -69,23 +70,25 @@ storeParsed (StoreParams isVerbose conn (moduleName, moduleId)) md = do
     convertName _ = Nothing
 
 storeNames :: StoreParams -> ([Located (IE GhcRn)], [LImportDecl GhcRn], HsGroup GhcRn) -> IO ()
-storeNames (StoreParams isVerbose conn (moduleName, moduleId)) gr = do
+storeNames sp@(StoreParams verbosity _ (moduleName, moduleId)) gr = do
+  let conn = storeParamsDbConn sp
   context <- defaultStoreContext conn moduleId moduleName Nothing
   ((), names) <- runWriterT (runReaderT (store gr) context)
   let uniqueNames = nub $ sort names
-  when isVerbose $ do
+  when (verbosity >= VerbosityVerbose) $ do
     putStrLn "### Storing names:"
     mapM_ print uniqueNames
   persistNames conn moduleId uniqueNames
 
 storeMain :: StoreParams -> Maybe Name -> IO ()
-storeMain (StoreParams isVerbose conn (moduleName, moduleId)) (Just nm) = do
-  when isVerbose $ do
+storeMain sp@(StoreParams verbosity _ (moduleName, moduleId)) (Just nm) = do
+  let conn = storeParamsDbConn sp
+  when (verbosity >= VerbosityVerbose) $ do
     putStrLn $ "### Storing main: " ++ show nm
   persistMain conn moduleId (generateFullName moduleName nm)
 storeMain _ Nothing = return ()
 
-persistNames :: Connection -> Int -> [NameRecord] -> IO ()
+persistNames :: DbConn -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do
     astIds <- persistAst conn (map convertLocation names)
     persistName conn (map convertName (names `zip` astIds))
@@ -96,7 +99,8 @@ persistNames conn moduleId names = do
       (moduleId, startRow, startColumn, endRow, endColumn)
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
-storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
+storeTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) env = do
+  let conn = storeParamsDbConn sp
   context <- defaultStoreContext conn moduleId moduleName Nothing
   -- putStrLn $ show $ tcg_binds env
   let storeEnv = do
@@ -104,7 +108,7 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
         store $ eltsUFM $ tcg_type_env env
   ((), types) <- runWriterT (runReaderT storeEnv context)
   let uniqueTypes = nub $ sort types
-  when isVerbose $ do
+  when (verbosity >= VerbosityVerbose) $ do
     putStrLn "### Storing types:"
     mapM_ print uniqueTypes
   persistTypes conn (map convertType uniqueTypes)
@@ -112,16 +116,17 @@ storeTypes (StoreParams isVerbose conn (moduleName, moduleId)) env = do
     convertType (TypeRecord name namespace typ) = (name, fmap fromEnum namespace, typ)
 
 storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
-storeTHNamesAndTypes (StoreParams isVerbose conn (moduleName, moduleId)) expr = do
+storeTHNamesAndTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) expr = do
+    let conn = storeParamsDbConn sp
     context <- defaultStoreContext conn moduleId moduleName Nothing
     ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
-    when isVerbose $ do
+    when (verbosity >= VerbosityVerbose) $ do
       putStrLn "### Storing names and types for TH:"
       mapM_ print namesAndTypes
     persistNamesAndTypes conn moduleId namesAndTypes
     persistTHRange conn (getLoc expr) moduleId namesAndTypes
 
-persistNamesAndTypes :: Connection -> Int -> [NameAndTypeRecord] -> IO ()
+persistNamesAndTypes :: DbConn -> Int -> [NameAndTypeRecord] -> IO ()
 persistNamesAndTypes conn moduleId namesAndTypes = do
     astIds <- persistAst conn (map convertLocation namesAndTypes)
     persistName conn (map convertName (namesAndTypes `zip` astIds))
@@ -132,7 +137,7 @@ persistNamesAndTypes conn moduleId namesAndTypes = do
     convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
       = (moduleId, startRow, startColumn, endRow, endColumn)
 
-persistTHRange :: Connection -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
+persistTHRange :: DbConn -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
 persistTHRange conn (RealSrcSpan sp) moduleId records = do
   let nodePos = realSrcSpanToNodePos sp
   astNode <- if nodePos `elem` (map ntrPos records)

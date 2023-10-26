@@ -192,7 +192,7 @@ test_didNotNotify = useTestRepo $ \conn -> do
 
 ------------------------------------------------------------------------------------------------
 
-setupSimpleTestFile :: Connection -> IO (FilePath, T.Text)
+setupSimpleTestFile :: DbConn -> IO (FilePath, T.Text)
 setupSimpleTestFile conn = do
   let fileName = testFilePrefix ++ "/X.hs"
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
@@ -224,7 +224,7 @@ setupSimpleTestFile conn = do
     ]
   return (fileName, T.pack content)
 
-setupAnotherTestFile :: Connection -> IO (FilePath, T.Text)
+setupAnotherTestFile :: DbConn -> IO (FilePath, T.Text)
 setupAnotherTestFile conn = do
   let fileName = testFilePrefix ++ "/Y.hs"
   fullFilePath <- ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath

@@ -6,7 +6,6 @@ import Control.Concurrent.MVar
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Data.Time.Clock
-import Database.PostgreSQL.Simple (Connection)
 
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.LspServer.Utils
@@ -30,7 +29,7 @@ type FileRecords = MVar (Map.Map FilePath FileRecord)
 data Original
 data Modified
 
-recordFileOpened :: Connection -> FilePath -> T.Text -> SourceDiffs Original Modified -> FileRecords -> IO ()
+recordFileOpened :: DbConn -> FilePath -> T.Text -> SourceDiffs Original Modified -> FileRecords -> IO ()
 recordFileOpened conn fp content diffs mv
   = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= \r -> return $ Map.alter (const r) fp frs
   where
@@ -39,7 +38,7 @@ recordFileOpened conn fp content diffs mv
       fmap (\src -> OpenFileRecord diffs (toFileLines src) contentLines) <$> getCompiledSource conn fp
     contentLines = toFileLines $ T.unpack content
 
-recordFileClosed :: Connection -> FilePath -> FileRecords -> IO ()
+recordFileClosed :: DbConn -> FilePath -> FileRecords -> IO ()
 recordFileClosed conn fp mv
   = modifyMVar_ mv $ \frs -> updateRecord (Map.lookup fp frs) >>= return . maybe frs (\r -> Map.insert fp r frs)
   where
@@ -71,17 +70,17 @@ isFileOpen fp frsMVar = do
     Just OpenFileRecord{} -> True
     _ -> False
 
-checkIfFilesHaveBeenChanged :: Connection -> IO [(FilePath, SourceDiffs Original Modified)]
+checkIfFilesHaveBeenChanged :: DbConn -> IO [(FilePath, SourceDiffs Original Modified)]
 checkIfFilesHaveBeenChanged conn = do 
   diffs <- getAllModifiedFileDiffs conn
   mapM (checkFileHaveBeenChanged conn) diffs
   
-checkIfFileHaveBeenChanged :: Connection -> FilePath -> IO (SourceDiffs Original Modified)
+checkIfFileHaveBeenChanged :: DbConn -> FilePath -> IO (SourceDiffs Original Modified)
 checkIfFileHaveBeenChanged conn fp = do
   (diffs, time) <- getModifiedTimeAndFileDiffs conn fp
   snd <$> checkFileHaveBeenChanged conn (fp, diffs, time)
 
-checkFileHaveBeenChanged :: Connection -> (FilePath, Maybe String, Maybe UTCTime) -> IO (FilePath, SourceDiffs Original Modified)
+checkFileHaveBeenChanged :: DbConn -> (FilePath, Maybe String, Maybe UTCTime) -> IO (FilePath, SourceDiffs Original Modified)
 checkFileHaveBeenChanged conn (filePath, diff, modifiedTime) = do
   modificationTime <- getFileModificationTime filePath
   case (modifiedTime, modificationTime) of

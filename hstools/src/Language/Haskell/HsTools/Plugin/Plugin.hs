@@ -44,7 +44,7 @@ withDB (connectionString:_) action = do
     conn <- liftIO (connectPostgreSQL (BS.pack connectionString))
     action conn
 
-cleanAndRecordModule :: Connection -> ModSummary -> IO (Maybe FilePath)
+cleanAndRecordModule :: DbConn -> ModSummary -> IO (Maybe FilePath)
 cleanAndRecordModule conn ms = do
   let Module unitId moduleName = ms_mod ms
   case ml_hs_file $ ms_location ms of
@@ -73,14 +73,16 @@ cleanAndRecordModule conn ms = do
 
 parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 parsedAction clOpts ms mod = liftIO $ do
-  when (isVerbose clOpts) $ putStrLn $ "Starting stage: parsedAction"
-  withDB clOpts $ \conn -> ioHandleErrors conn "parsedAction" $ do
-    reinitializeTablesIfNeeded conn
-    moduleFilePath <- cleanAndRecordModule conn ms
-    let modName = moduleNameString $ ms_mod_name ms
-    case moduleFilePath of
-      Just fp -> doRunStage (isVerbose clOpts) conn "parse" fp modName (< SourceSaved) SourceSaved (flip storeParsed mod)
-      Nothing -> return ()
+  when (optionsVerbosity clOpts >= VerbosityVerbose) $ putStrLn $ "Starting stage: parsedAction"
+  withDB clOpts $ \conn -> do
+    let dbConn = DbConn (debugStdOutLogger $ optionsVerbosity clOpts) conn
+    ioHandleErrors conn "parsedAction" $ do
+      reinitializeTablesIfNeeded dbConn
+      moduleFilePath <- cleanAndRecordModule dbConn ms
+      let modName = moduleNameString $ ms_mod_name ms
+      case moduleFilePath of
+        Just fp -> doRunStage (optionsVerbosity clOpts) conn "parse" fp modName (< SourceSaved) SourceSaved (flip storeParsed mod)
+        Nothing -> return ()
   return mod
 
 renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
@@ -103,25 +105,28 @@ spliceAction clOpts expr = do
   
 runStage :: [CommandLineOption] -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> TcM ()
 runStage clOpts caption condition newStage action = withDB clOpts $ \conn -> do
-  when (isVerbose clOpts) $ liftIO $ putStrLn $ "Starting stage: " ++ caption
+  when (optionsVerbosity clOpts >= VerbosityVerbose) $
+    liftIO $ putStrLn $ "Starting stage: " ++ caption
   env <- getEnv
   let mod = tcg_mod $ env_gbl env
       modName = moduleNameString $ moduleName mod
       localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc $ env_gbl env
   fullFilePath <- liftIO $ canonicalizePath localFilePath
-  liftIO $ doRunStage (isVerbose clOpts) conn caption fullFilePath modName condition newStage action
+  liftIO $ doRunStage (optionsVerbosity clOpts) conn caption fullFilePath modName condition newStage action
 
-doRunStage :: Bool -> Connection -> String -> FilePath -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
-doRunStage isVerbose conn caption fullFilePath modName condition newStage action =
+doRunStage :: Verbosity -> Connection -> String -> FilePath -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
+doRunStage verbosity conn caption fullFilePath modName condition newStage action = do
+  let dbConn = DbConn (debugStdOutLogger verbosity) conn
   ioHandleErrors conn ("plugin: " ++ caption) $ withTransaction conn $ do
-    moduleIdAndState <- getModuleIdLoadingState conn fullFilePath
+    moduleIdAndState <- getModuleIdLoadingState dbConn fullFilePath
     case moduleIdAndState of
       Just (modId, status) | condition status -> do 
-        action $ StoreParams isVerbose conn (modName, modId)
-        void $ updateLoadingState conn modId newStage
+        action $ StoreParams verbosity conn (modName, modId)
+        void $ updateLoadingState dbConn modId newStage
       Nothing -> putStrLn $ "[" ++ caption ++ "] WARNING: Module is not in the DB: " ++ modName
       Just _ -> return ()
 
-isVerbose :: [CommandLineOption] -> Bool
-isVerbose (_:"verbose":_) = True
-isVerbose _ = False
+optionsVerbosity :: [CommandLineOption] -> Verbosity
+optionsVerbosity (_:"verbose":_) = VerbosityVerbose
+optionsVerbosity (_:"debug":_) = VerbosityDebug
+optionsVerbosity _ = VerbositySilent
