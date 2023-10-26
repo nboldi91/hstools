@@ -103,7 +103,7 @@ storeDefCtx DefParameter st = do
 storeDefCtx k st = storeDefinition k >> definitionContext k st
 
 storeLoc :: (a -> StoreM r ()) -> Located a -> StoreM r ()
-storeLoc st (L span ast) = {- trace ("##L: " ++ show span) $ -} do
+storeLoc st (L span ast) = do
   thSpan <- case srcSpanToNodePos span of
               Just np -> asks (any (\sp -> sp `containsNP` np) . scThSpans)
               Nothing -> return False

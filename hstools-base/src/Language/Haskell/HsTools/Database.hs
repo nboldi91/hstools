@@ -22,7 +22,7 @@ data Namespace = TyVarNS | TyConNS | DataConNS | ValNS | VarNS | ModuleNS derivi
 
 data DefinitionKind
   = DefModule | DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
-  | DefParameter | DefTypeDecl | DefConstructor | DefCtorArg
+  | DefParameter | DefTypeDecl | DefConstructor | DefCtorArg | DefForeignExport | DefForeignImport
   deriving (Show, Eq, Ord, Enum)
 
 isSignatureDef :: DefinitionKind -> Bool
