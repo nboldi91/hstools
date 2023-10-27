@@ -105,7 +105,19 @@ getAllMains :: DbConn -> IO [[String]] -- not sure why this is list of strings
 getAllMains conn = query_ conn "SELECT name FROM mains"
 
 getAllDefinitions :: DbConn -> IO [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
-getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn "SELECT definitionKind, name, startRow, startColumn, endRow, endColumn FROM definitions d JOIN ast a ON d.astNode = a.astId LEFT JOIN names n ON a.startRow = n.namedDefinitionRow AND a.startColumn = n.namedDefinitionColumn AND a.endRow = n.namedDefinitionEndRow AND a.endColumn = n.namedDefinitionEndColumn ORDER BY startRow, startColumn"
+getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn 
+  [sql| 
+    SELECT definitionKind, name, startRow, startColumn, endRow, endColumn
+    FROM definitions d
+    JOIN ast a
+      ON d.astNode = a.astId
+    LEFT JOIN names n
+      ON a.startRow = n.namedDefinitionRow
+      AND a.startColumn = n.namedDefinitionColumn
+      AND a.endRow = n.namedDefinitionEndRow
+      AND a.endColumn = n.namedDefinitionEndColumn
+    ORDER BY startRow, startColumn
+  |]
 
 getTHRanges :: DbConn -> Int -> IO [(Int, Int, Int, Int)]
 getTHRanges conn moduleId

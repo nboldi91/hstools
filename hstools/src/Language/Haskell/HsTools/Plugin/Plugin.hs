@@ -89,13 +89,13 @@ renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblE
 renamedAction clOpts env group = do
   let exports = maybe [] (map fst) $ tcg_rn_exports env
   let imports = tcg_rn_imports env
-  runStage clOpts "main" (<= NamesLoaded) NamesLoaded $ flip storeMain $ tcg_main env
   runStage clOpts "rename" (<= NamesLoaded) NamesLoaded (flip storeNames (exports, imports, group))
   return (env, group)
 
 typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 typeCheckAction clOpts _ env = do
   runStage clOpts "typeCheck" (< TypesLoaded) TypesLoaded (flip storeTypes env)
+  runStage clOpts "main" (== TypesLoaded) TypesLoaded $ flip storeMain $ tcg_main env
   return env
 
 spliceAction :: [CommandLineOption] -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)

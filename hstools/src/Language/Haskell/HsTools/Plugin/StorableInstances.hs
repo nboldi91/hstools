@@ -230,8 +230,8 @@ instance StorablePass p r => Storable (WarnDecl (GhcPass p)) r where
     store (XWarnDecl {}) = return ()
 
 instance StorablePass p r => Storable (ForeignDecl (GhcPass p)) r where
-    store (ForeignImport _ n t _) = storeDefCtx DefForeignImport $ defining (store n) >> store t
-    store (ForeignExport _ n t _) = storeDefCtx DefForeignExport $ defining (store n) >> store t
+    store (ForeignImport _ n t _) = storeDefCtx DefForeignImport $ store n >> store t
+    store (ForeignExport _ n t _) = storeDefCtx DefForeignExport $ store n >> store t
     store (XForeignDecl {}) = return ()
 
 instance StorablePass p r => Storable (DefaultDecl (GhcPass p)) r where

@@ -180,8 +180,8 @@ test_foreignImportExport :: Assertion
 test_foreignImportExport = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where", "x :: Int", "x = 42", "foreign export ccall x :: Int", "foreign import ccall \"stdio.h foo\" foo :: IO Int"] (runGhcTest conn)
   defs <- getAllDefinitions conn
-  assertBoolVerbose (show defs) $ (DefForeignExport, Just "X.x", 4, 1, 4, 30) `elem` defs
-  assertBoolVerbose (show defs) $ (DefForeignImport, Just "X.foo", 5, 1, 5, 49) `elem` defs
+  assertBoolVerbose (show defs) $ (DefForeignExport, Nothing, 4, 1, 4, 30) `elem` defs
+  assertBoolVerbose (show defs) $ (DefForeignImport, Nothing, 5, 1, 5, 49) `elem` defs
 
 -----------------------------------------
 --- technical test cases
