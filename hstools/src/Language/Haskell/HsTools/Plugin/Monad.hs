@@ -11,6 +11,7 @@ import SrcLoc
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Utils (DbConn)
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.SourcePosition
 
 type StoreM r = ReaderT (StoreContext r) (WriterT [r] IO)
 
@@ -21,7 +22,7 @@ data StoreContext r = StoreContext
   , scDefinitions :: [DefinitionContext]
   , scInsideDefinition :: Bool
   , scLocalUnderLoc :: StoreM r () -> StoreM r ()
-  , scThSpans :: [NodePos]
+  , scThSpans :: [Range NodePos]
   }
 
 pushDownContext :: (StoreM r () -> StoreM r ()) -> StoreM r () -> StoreM r ()
@@ -53,14 +54,14 @@ currentDefinition = asks (listToMaybe . scDefinitions)
 data DefinitionContext = DefinitionContext { dcKind :: DefinitionKind, dcSpan :: SrcSpan }
   deriving Eq
 
-getDefinitionPosition :: StoreM r (Maybe NodePos)
+getDefinitionPosition :: StoreM r (Maybe (Range NodePos))
 getDefinitionPosition = do
   isInsideDefinition <- asks scInsideDefinition
   definition <- currentDefinition
   defined <- asks scDefining
   return $ guard (defined && not isInsideDefinition) >> definition >>= srcSpanToNodePos . dcSpan
 
-currentPos :: (NodePos -> StoreM r ()) -> StoreM r ()
+currentPos :: (Range NodePos -> StoreM r ()) -> StoreM r ()
 currentPos st = do
   span <- asks scSpan
   case srcSpanToNodePos span of
@@ -75,7 +76,7 @@ defaultStoreContext conn moduleId moduleName modSpan = do
     , scSpan = noSrcSpan
     , scDefining = False
     , scDefinitions = maybe [] (\ms -> [DefinitionContext DefModule ms]) modSpan
-    , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> NodePos {..}) thSpans
+    , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> Range (SP npStartRow npStartCol) (SP npEndRow npEndCol)) thSpans
     , scLocalUnderLoc = id
     , scInsideDefinition = False
     }

@@ -10,24 +10,25 @@ import qualified Data.Map as Map
 import Data.Maybe
 
 import Language.Haskell.HsTools.Plugin.Types
+import Language.Haskell.HsTools.SourcePosition
 
 findDefinitionOfComments :: Int -> Map.Map SrcSpan [Located AnnotationComment] -> [(ParseRecord, Int)] -> [(Int, Int, String)]
 findDefinitionOfComments moduleId commMap records =
   map (\(defId, text) -> (moduleId, defId, text))
     $ definitionsComments
       (catMaybes $ map (\(L l c) -> (, getAnnString c) <$> srcSpanToNodePos l) $ concat $ Map.elems commMap)
-      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos sr sc _ _), defId) -> ((sr, sc), defId)) records)
-      (Map.fromList $ map (\(ParseDefinitionRecord _ (NodePos _ _ er ec), defId) -> ((er, ec), defId)) records)
+      (Map.fromList $ map (\(ParseDefinitionRecord _ (Range (SP sr sc) _), defId) -> ((sr, sc), defId)) records)
+      (Map.fromList $ map (\(ParseDefinitionRecord _ (Range _ (SP er ec)), defId) -> ((er, ec), defId)) records)
 
-definitionsComments :: [(NodePos, String)] -> Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> [(Int, String)]
+definitionsComments :: [(Range NodePos, String)] -> Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> [(Int, String)]
 definitionsComments comments defStartMap defEndMap = catMaybes $ map (findCommentedDef defStartMap defEndMap) comments
 
-findCommentedDef :: Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> (NodePos, String) -> Maybe (Int, String)
+findCommentedDef :: Map.Map (Int, Int) Int -> Map.Map (Int, Int) Int -> (Range NodePos, String) -> Maybe (Int, String)
 findCommentedDef defStartMap defEndMap (np, comm)
   | "-- |" `isPrefixOf` comm || "{- |" `isPrefixOf` comm || "{-|" `isPrefixOf` comm =
-    fmap ((,comm) . fst) $ Map.minView $ snd $ Map.split (npEndRow np, npEndCol np) defStartMap
+    fmap ((,comm) . fst) $ Map.minView $ snd $ Map.split (endLine np, endCol np) defStartMap
   | "-- ^" `isPrefixOf` comm || "{- ^" `isPrefixOf` comm || "{-^" `isPrefixOf` comm =
-    fmap ((,comm) . fst) $ Map.maxView $ fst $ Map.split (npStartRow np, npStartCol np) defEndMap
+    fmap ((,comm) . fst) $ Map.maxView $ fst $ Map.split (startLine np, startCol np) defEndMap
   | otherwise = Nothing
 
 getAnnString :: AnnotationComment -> String

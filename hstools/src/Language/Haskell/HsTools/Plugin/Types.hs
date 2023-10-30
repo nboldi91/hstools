@@ -1,3 +1,5 @@
+{-# LANGUAGE EmptyDataDeriving #-}
+
 module Language.Haskell.HsTools.Plugin.Types where
 
 import Database.PostgreSQL.Simple (Connection)
@@ -7,47 +9,41 @@ import SrcLoc
 
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.Utils (Verbosity(..), DbConn(..), debugStdOutLogger)
+import Language.Haskell.HsTools.SourcePosition (Range(..), SP(..))
 
 data ParseRecord
   = ParseDefinitionRecord
     { prKind :: DefinitionKind
-    , prPos :: NodePos
+    , prPos :: Range NodePos
     }
   | ParseModuleName
     { prModuleName :: String
-    , prPos :: NodePos
+    , prPos :: Range NodePos
     , prIsDefined :: Bool
-    , prDefinitionOf :: Maybe NodePos
+    , prDefinitionOf :: Maybe (Range NodePos)
     }
   deriving (Show, Eq, Ord)
 
 data NameRecord = NameRecord
-  { nmName :: String
-  , nmNamespace :: Maybe Namespace
+  { nmName :: FullName
   , nmIsDefined :: Bool
-  , nmDefinitionOf :: Maybe NodePos
-  , nmPos :: NodePos
+  , nmDefinitionOf :: Maybe (Range NodePos)
+  , nmPos :: Range NodePos
   } deriving (Show, Eq, Ord)
 
-data NodePos = NodePos
-  { npStartRow :: Int
-  , npStartCol :: Int
-  , npEndRow :: Int
-  , npEndCol :: Int
-  } deriving (Eq, Ord)
+data NodePos
+  deriving (Show, Eq, Ord)
 
 data TypeRecord = TypeRecord
-  { trTypedName :: String
-  , trTypeNamespace :: Maybe Namespace
+  { trTypedName :: FullName
   , trType :: String
   } deriving (Show, Eq, Ord)
 
 data NameAndTypeRecord = NameAndTypeRecord
-  { ntrName :: String
-  , ntrNamespace :: Maybe Namespace
+  { ntrName :: FullName
   , ntrIsDefined :: Bool
   , ntrType :: Maybe String
-  , ntrPos :: NodePos
+  , ntrPos :: Range NodePos
   } deriving (Show, Eq, Ord)
 
 data StoreParams = StoreParams
@@ -59,20 +55,17 @@ data StoreParams = StoreParams
 storeParamsDbConn :: StoreParams -> DbConn
 storeParamsDbConn sp = DbConn (debugStdOutLogger $ spVerbosity sp) (spConnection sp)
 
-instance Show NodePos where
-  show (NodePos sr sc er ec) = show sr ++ ":" ++ show sc ++ "-" ++ show er ++ ":" ++ show ec
-
-containsNP :: NodePos -> NodePos -> Bool
-NodePos sr1 sc1 er1 ec1 `containsNP` NodePos sr2 sc2 er2 ec2
+containsNP :: Range NodePos -> Range NodePos -> Bool
+Range (SP sr1 sc1) (SP er1 ec1) `containsNP` Range (SP sr2 sc2) (SP er2 ec2)
   = (sr1 < sr2 || (sr1 == sr2 && sc1 <= sc2)) && (er1 > er2 || (er1 == er2 && ec1 >= ec2))
 
-srcSpanToNodePos :: SrcSpan -> Maybe NodePos
+srcSpanToNodePos :: SrcSpan -> Maybe (Range NodePos)
 srcSpanToNodePos (RealSrcSpan span) = Just $ realSrcSpanToNodePos span
 srcSpanToNodePos _ = Nothing
 
-realSrcSpanToNodePos :: RealSrcSpan -> NodePos
+realSrcSpanToNodePos :: RealSrcSpan -> Range NodePos
 realSrcSpanToNodePos span
-  = (NodePos (srcLocLine start) (srcLocCol start) (srcLocLine end) (srcLocCol end))
+  = Range (SP (srcLocLine start) (srcLocCol start)) (SP (srcLocLine end) (srcLocCol end))
   where
     start = realSrcSpanStart span
     end = realSrcSpanEnd span

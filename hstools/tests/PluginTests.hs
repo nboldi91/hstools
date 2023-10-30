@@ -11,6 +11,7 @@ import Test.Framework.HUnitWrapper
 import Test.HUnit.Base (Assertion)
 
 import Data.List
+import Data.Maybe (isJust)
 import Control.Exception (SomeException)
 import Control.Monad.IO.Class
 
@@ -36,7 +37,7 @@ test_empty :: Assertion
 test_empty = useTestRepo $ \conn -> do
   withTestFileLines testFile ["module X where"] (runGhcTest conn)
   names <- getAllNames conn
-  assertEqual [ (1, 8, "X", Nothing, True) ] names
+  assertEqual [ (1, 8, FullName "X" Nothing (Just ModuleNS), Nothing, True) ] names
   defs <- getAllDefinitions conn
   assertEqual [ (DefModule, Just "X", 1, 1, 2, 1) ] defs
 
@@ -265,21 +266,21 @@ test_typeErrorShouldNotClearExistingData = useTestRepo $ \conn -> do
 
 ------------------------------------------------------------------------------
 
-data NameDefinition = Global String | Local String
+data NameDefinition = Global { ndName :: String } | Local { ndName :: String }
 data NameRole = Definition | Use
   deriving (Eq)
 
-assertHasName :: HasCallStack => [(Int, Int, String, Maybe String, Bool)] -> (Int, Int, NameDefinition, String, NameRole) -> Assertion
+assertHasName :: HasCallStack => [(Int, Int, FullName, Maybe String, Bool)] -> (Int, Int, NameDefinition, String, NameRole) -> Assertion
 assertHasName names expected = assertBoolVerbose ("actual names: " ++ show names) $ any (matchRow expected) names
   where matchRow (l, c, nd, t, nr) (l', c', n, t', d) =
           l == l' && c == c' && (nr == Definition) == d && Just t == t'
-            && (case nd of Global n' -> n == n'; Local n' -> (n' ++ ":") `isPrefixOf` n)
+            && ndName nd == fnName n && (case nd of Local n' -> isJust (fnLocalName n); _ -> True)
 
-assertHasNameNoType :: HasCallStack => [(Int, Int, String, Maybe String, Bool)] -> (Int, Int, NameDefinition, NameRole) -> Assertion
+assertHasNameNoType :: HasCallStack => [(Int, Int, FullName, Maybe String, Bool)] -> (Int, Int, NameDefinition, NameRole) -> Assertion
 assertHasNameNoType names expected = assertBoolVerbose ("actual names: " ++ show names) $ any (matchRow expected) names
   where matchRow (l, c, nd, nr) (l', c', n, t', d) =
           l == l' && c == c' && (nr == Definition) == d && Nothing == t'
-            && (case nd of Global n' -> n == n'; Local n' -> (n' ++ ":") `isPrefixOf` n)
+            && ndName nd == fnName n && (case nd of Local n' -> isJust (fnLocalName n); _ -> True)
 
 runGhcTestNoSuccessCheck conn = do
   res <- defaultErrorHandler defaultFatalMessager defaultFlushOut $ do

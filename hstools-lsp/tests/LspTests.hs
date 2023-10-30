@@ -200,12 +200,12 @@ setupSimpleTestFile conn = do
   time <- getCurrentTime
   mi <- insertModule conn fullFilePath time "X" "test" content
   asts <- persistAst conn
-    [ (mi, 1, 1, 1, 2)
-    , (mi, 1, 5, 1, 6)
-    , (mi, 2, 1, 2, 2)
-    , (mi, 1, 1, 1, 6)
-    , (mi, 2, 1, 2, 7)
-    , (mi, 1, 1, 3, 1)
+    [ FullRange mi $ SP.Range (SP 1 1) (SP 1 2)
+    , FullRange mi $ SP.Range (SP 1 5) (SP 1 6)
+    , FullRange mi $ SP.Range (SP 2 1) (SP 2 2)
+    , FullRange mi $ SP.Range (SP 1 1) (SP 1 6)
+    , FullRange mi $ SP.Range (SP 2 1) (SP 2 7)
+    , FullRange mi $ SP.Range (SP 1 1) (SP 3 1)
     ]
   defs <- persistDefinitions conn
     [ (mi, asts !! 5, DefModule)
@@ -213,14 +213,16 @@ setupSimpleTestFile conn = do
     , (mi, asts !! 4, DefValue)
     ]
   persistComments conn [ (mi, defs !! 2, "-- ^ comment for y") ]
+  let x = FullName "X.x" Nothing (Just ValNS)
+  let y = FullName "X.y" Nothing (Just ValNS)
   persistName conn 
-    [ (mi, asts !! 0, "X.x", vnms, True, Just 1, Just 1, Just 1, Just 6)
-    , (mi, asts !! 1, "X.y", vnms, False, Nothing, Nothing, Nothing, Nothing)
-    , (mi, asts !! 2, "X.y", vnms, True, Just 2, Just 1, Just 2, Just 7)
+    [ (mi, asts !! 0, x, True, Just (SP.Range (SP 1 1) (SP 1 6)))
+    , (mi, asts !! 1, y, False, Nothing)
+    , (mi, asts !! 2, y, True, Just (SP.Range (SP 2 1) (SP 2 7)))
     ]
   persistTypes conn
-    [ ("X.x", vnms, "()")
-    , ("X.y", vnms, "()")
+    [ (x, "()")
+    , (y, "()")
     ]
   return (fileName, T.pack content)
 
@@ -232,23 +234,21 @@ setupAnotherTestFile conn = do
   time <- getCurrentTime
   mi <- insertModule conn fullFilePath time "Y" "test" content
   asts <- persistAst conn
-    [ (mi, 2, 1, 2, 2)
-    , (mi, 2, 5, 2, 6)
-    , (mi, 2, 1, 2, 6)
+    [ FullRange mi $ SP.Range (SP 2 1) (SP 2 2)
+    , FullRange mi $ SP.Range (SP 2 5) (SP 2 6)
+    , FullRange mi $ SP.Range (SP 2 1) (SP 2 6)
     ]
+  let x = FullName "X.x" Nothing (Just ValNS)
+  let z = FullName "X.z" Nothing (Just ValNS)
   persistName conn
-    [ (mi, asts !! 0, "Y.z", vnms, True, Just 2, Just 1, Just 2, Just 6)
-    , (mi, asts !! 1, "X.x", vnms, False, Nothing, Nothing, Nothing, Nothing)
+    [ (mi, asts !! 0, z, True, Just $ SP.Range (SP 2 1) (SP 2 6))
+    , (mi, asts !! 1, x, False, Nothing)
     ]
   persistTypes conn
-    [ ("X.x", vnms, "()")
-    , ("X.z", vnms, "()")
+    [ (x, "()")
+    , (z, "()")
     ]
   return (fileName, T.pack content)
-
--- value namespace
-vnms :: Maybe Int
-vnms = Just (fromEnum ValNS)
 
 testFilePrefix :: String
 testFilePrefix = "hstools-test-temp"

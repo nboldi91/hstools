@@ -563,7 +563,6 @@ instance Storable Name NameRecord where
       defNodePos <- getDefinitionPosition
       let storedName = NameRecord
             { nmName = generateFullName currentModuleName id
-            , nmNamespace = nameNamespace id
             , nmIsDefined = defined
             , nmDefinitionOf = defNodePos
             , nmPos = realSrcSpanToNodePos span
@@ -590,18 +589,14 @@ instance Storable TypedName NameAndTypeRecord where
         currentModuleName <- asks scModuleName
         defined <- asks scDefining
         let typeStr = showSDocUnsafe $ ppr typ
-        let modName = nameModule_maybe name
-            fullName = case modName of
-                        Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name)
-                        Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
-            record = NameAndTypeRecord
-                { ntrName = fullName
-                , ntrNamespace = nameNamespace name
-                , ntrIsDefined = defined
-                , ntrType = Just typeStr
-                , ntrPos = np
-                }
-        tell [record] 
+        tell [
+          NameAndTypeRecord
+            { ntrName = generateFullName currentModuleName name
+            , ntrIsDefined = defined
+            , ntrType = Just typeStr
+            , ntrPos = np
+            }
+          ] 
       Nothing -> return ()
   
 instance Storable Name ParseRecord where
@@ -632,25 +627,27 @@ nameTypeToTypeRecord :: String -> Name -> Type -> TypeRecord
 nameTypeToTypeRecord currentModuleName name typ
   = TypeRecord
       (generateFullName currentModuleName name)
-      (nameNamespace name)
       (showSDocUnsafe $ ppr typ)
 
-generateFullName :: String -> Name -> String
+generateFullName :: String -> Name -> FullName
 generateFullName currentModuleName name = case nameModule_maybe name of
-  (Just mn) -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name)
-  Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr name) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique name)) 
+  Just mn -> -- top-level name
+    FullName
+      (showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr name))
+      Nothing
+      (nameNamespace name)
+  Nothing -> -- local name: with unique id
+    FullName
+      (currentModuleName ++ "." ++ showSDocUnsafe (ppr name)) 
+      (Just $ showSDocUnsafe (pprUniqueAlways (getUnique name)))
+      (nameNamespace name)
 
 instance Storable Name NameAndTypeRecord where
   store id = currentPos $ \np -> do
     currentModuleName <- asks scModuleName
     defined <- asks scDefining
-    let modName = nameModule_maybe id
-        fullName = case modName of
-                    Just mn -> showSDocUnsafe (pprModule mn) ++ "." ++ showSDocUnsafe (ppr id)
-                    Nothing -> currentModuleName ++ "." ++ showSDocUnsafe (ppr id) ++ ":" ++ showSDocUnsafe (pprUniqueAlways (getUnique id)) 
-        record = NameAndTypeRecord
-            { ntrName = fullName
-            , ntrNamespace = nameNamespace id
+    let record = NameAndTypeRecord
+            { ntrName = generateFullName currentModuleName id
             , ntrIsDefined = defined
             , ntrType = Nothing
             , ntrPos = np

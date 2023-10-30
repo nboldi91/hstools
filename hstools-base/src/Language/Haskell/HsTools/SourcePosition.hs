@@ -8,12 +8,24 @@ data SP a = SP { spLine :: Int, spCol :: Int }
   deriving (Eq, Ord, Show, Read)
 
 data Range a = Range { srStart :: SP a, srEnd :: SP a }
-  deriving (Eq, Show, Read)
+  deriving (Eq, Ord, Show, Read)
 
 data SrcDiff orig mod = SrcDiff { sdFrom :: Range orig, sdTo :: Range mod }
-  deriving (Eq, Show, Read)
+  deriving (Eq, Ord, Show, Read)
 
-lineDiff :: SP mod -> SP orig ->Int
+startLine :: Range a -> Int
+startLine = spLine . srStart
+
+startCol :: Range a -> Int
+startCol = spCol . srStart
+
+endLine :: Range a -> Int
+endLine = spLine . srEnd
+
+endCol :: Range a -> Int
+endCol = spCol . srEnd
+
+lineDiff :: SP mod -> SP orig -> Int
 lineDiff modPos oldPos  = spLine modPos - spLine oldPos
 
 colDiff :: SP mod -> SP orig -> Int

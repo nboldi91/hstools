@@ -14,6 +14,7 @@ import qualified Database.PostgreSQL.Simple as PLSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 
 import Language.Haskell.HsTools.Utils (DbConn(..))
+import Language.Haskell.HsTools.SourcePosition (Range(..), startLine, startCol, endLine, endCol)
 
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
     deriving (Show, Enum, Eq, Ord)
@@ -24,6 +25,17 @@ data DefinitionKind
   = DefModule | DefSignature | DefInstance | DefPatternSynonym | DefClassOpSignature | DefValue | DefTypeClass
   | DefParameter | DefTypeDecl | DefConstructor | DefCtorArg | DefForeignExport | DefForeignImport
   deriving (Show, Eq, Ord, Enum)
+
+data FullName = FullName
+  { fnName :: String
+  , fnLocalName :: Maybe String
+  , fnNamespace :: Maybe Namespace
+  } deriving (Show, Eq, Ord)
+
+data FullRange a = FullRange
+  { frModule :: Int
+  , frRange :: Range a
+  }
 
 isSignatureDef :: DefinitionKind -> Bool
 isSignatureDef DefSignature = True
@@ -129,27 +141,33 @@ getAstNodes conn moduleId =
     |]
     (Only moduleId)
 
-getAllNames :: DbConn -> IO [(Int, Int, String, Maybe String, Bool)]
-getAllNames conn = query_ conn
-  [sql|
-    SELECT startRow, startColumn, name, type, isDefined
-    FROM ast AS n
-    JOIN names nn
-      ON nn.astNode = n.astId
-    LEFT JOIN types tt
-      ON tt.typedName = nn.name
-      AND tt.typeNamespace = nn.namespace
-    ORDER BY startRow, startColumn
-  |]
+getAllNames :: DbConn -> IO [(Int, Int, FullName, Maybe String, Bool)]
+getAllNames conn = 
+  map convertName <$> query_ conn
+    [sql|
+      SELECT startRow, startColumn, name, localName, namespace, type, isDefined
+      FROM ast AS n
+      JOIN names nn
+        ON nn.astNode = n.astId
+      LEFT JOIN types tt
+        ON tt.typedName = nn.name
+        AND tt.typeNamespace = nn.namespace
+      ORDER BY startRow, startColumn
+    |]
+  where
+    convertName (startRow, startColumn, name, localName, namespace, typ, isDefined) =
+      (startRow, startColumn, FullName name localName (fmap toEnum namespace), typ, isDefined)
 
-persistAst :: DbConn -> [(Int, Int, Int, Int, Int)] -> IO [Int]
+persistAst :: DbConn -> [FullRange a] -> IO [Int]
 persistAst conn asts = fmap head <$> returning conn
   [sql|
     INSERT INTO ast (module, startRow, startColumn, endRow, endColumn)
     VALUES (?, ?, ?, ?, ?)
     RETURNING astId
   |]
-  asts
+  (map convert asts)
+  where
+    convert (FullRange mod rng) = (mod, startLine rng, startCol rng, endLine rng, endCol rng)
 
 persistDefinitions :: DbConn -> [(Int, Int, DefinitionKind)] -> IO [Int]
 persistDefinitions conn definitions = fmap head <$> returning conn
@@ -160,21 +178,27 @@ persistDefinitions conn definitions = fmap head <$> returning conn
   |]
   (map (\(a,b,c) -> (a,b, fromEnum c)) definitions)
 
-persistName :: DbConn -> [(Int, Int, String, Maybe Int, Bool, Maybe Int, Maybe Int, Maybe Int, Maybe Int)] -> IO ()
+persistName :: DbConn -> [(Int, Int, FullName, Bool, Maybe (Range a))] -> IO ()
 persistName conn names = void $ executeMany conn
   [sql|
-    INSERT INTO names (module, astNode, name, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO names (module, astNode, name, localName, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   |]
-  names
+  (map convertRecord names)
+  where
+    convertRecord (mod, ast, FullName name localName namespace, isDefined, rn) =
+      (mod, ast, name, localName, fmap fromEnum namespace, isDefined, fmap startLine rn, fmap startCol rn, fmap endLine rn, fmap endCol rn)
 
-persistTypes :: DbConn -> [(String, Maybe Int, String)] -> IO ()
+persistTypes :: DbConn -> [(FullName, String)] -> IO ()
 persistTypes conn types = void $ executeMany conn
   [sql|
-    INSERT INTO types (typedName, typeNamespace, type)
-    VALUES (?, ?, ?)
+    INSERT INTO types (typedName, typedLocalName, typeNamespace, type)
+    VALUES (?, ?, ?, ?)
   |]
-  types
+  (map convertType types)
+  where
+    convertType (FullName name localName namespace, typ) =
+      (name, localName, fmap fromEnum namespace, typ)
 
 persistTHRange' :: DbConn -> Int -> Int -> IO ()
 persistTHRange' conn mod astNode = void $ execute conn
@@ -243,8 +267,8 @@ getTHRanges conn moduleId = query conn
   |]
   (Only moduleId)
 
-getAstId :: DbConn -> Int -> Int -> Int -> Int -> Int -> IO Int
-getAstId conn moduleId startRow startCol endRow endCol = head . head <$> query conn 
+getAstId :: DbConn -> FullRange a -> IO Int
+getAstId conn (FullRange moduleId rn) = head . head <$> query conn 
   [sql|
     SELECT astId
     FROM ast
@@ -254,16 +278,16 @@ getAstId conn moduleId startRow startCol endRow endCol = head . head <$> query c
       AND endRow = ?
       AND endColumn = ?
   |]
-  (moduleId, startRow, startCol, endRow, endCol)
+  (moduleId, startLine rn, startCol rn, endLine rn, endCol rn)
 
-insertAstId :: DbConn -> Int -> Int -> Int -> Int -> Int -> IO Int
-insertAstId conn moduleId startRow startCol endRow endCol = head . head <$> returning conn 
+insertAstId :: DbConn -> FullRange a -> IO Int
+insertAstId conn (FullRange moduleId rn) = head . head <$> returning conn 
   [sql|
     INSERT INTO ast (module, startRow, startColumn, endRow, endColumn)
     VALUES (?, ?, ?, ?, ?)
     RETURNING astId
   |]
-  [(moduleId, startRow, startCol, endRow, endCol)]
+  [(moduleId, startLine rn, startCol rn, endLine rn, endCol rn)]
 
 getMatchingNames :: DbConn -> FilePath -> Int -> Int -> Maybe Bool -> IO [(String, Int, Int, Int, Int)]
 getMatchingNames conn file row col onlyDefinitions = query conn queryWithIsDefined (file, row, row, col, col)
@@ -371,7 +395,8 @@ cleanRelatedData conn moduleId = void $ do
     (\table -> execute conn (fromString $ "DELETE FROM " ++ table ++ " WHERE module = ?") [moduleId])
     ["mains", "definitions", "comments", "names", "thRanges", "ast"]
   execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
-  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typeNamespace = namespace)"
+  -- TODO: this could be foreign key?
+  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typedLocalName = localName AND typeNamespace = namespace)"
 
 reinitializeTablesIfNeeded :: DbConn -> IO ()
 reinitializeTablesIfNeeded conn = do
@@ -435,6 +460,7 @@ databaseSchema = [sql|
     , namedDefinitionEndRow INT
     , namedDefinitionEndColumn INT
     , name TEXT NOT NULL
+    , localName TEXT
     , namespace INT
     );
 
@@ -459,6 +485,7 @@ databaseSchema = [sql|
 
   CREATE TABLE types 
     ( typedName TEXT NOT NULL
+    , typedLocalName TEXT
     , typeNamespace INT
     , type TEXT NOT NULL
     );

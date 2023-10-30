@@ -61,12 +61,11 @@ storeParsed sp@(StoreParams verbosity _ (moduleName, moduleId)) md = do
     persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (sortedDefs `zip` defIds)
     persistName conn (catMaybes $ map convertName (sortedDefs `zip` astIds))
   where
-    convertLocation p = (moduleId, startRow, startColumn, endRow, endColumn)
-      where NodePos startRow startColumn endRow endColumn = prPos p
+    convertLocation p = FullRange moduleId (prPos p)
     convertDefinition ((ParseDefinitionRecord kind _), astId) = Just (moduleId, astId, kind)
     convertDefinition _ = Nothing
     convertName ((ParseModuleName mn _ isDefined definition), astId) =
-      Just (moduleId, astId :: Int, mn, Just $ fromEnum ModuleNS, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
+      Just (moduleId, astId :: Int, FullName mn Nothing (Just ModuleNS), isDefined, definition)
     convertName _ = Nothing
 
 storeNames :: StoreParams -> ([Located (IE GhcRn)], [LImportDecl GhcRn], HsGroup GhcRn) -> IO ()
@@ -85,18 +84,16 @@ storeMain sp@(StoreParams verbosity _ (moduleName, moduleId)) (Just nm) = do
   let conn = storeParamsDbConn sp
   when (verbosity >= VerbosityVerbose) $ do
     putStrLn $ "### Storing main: " ++ show nm
-  persistMain conn moduleId (generateFullName moduleName nm)
+  persistMain conn moduleId (fnName $ generateFullName moduleName nm)
 storeMain _ Nothing = return ()
 
 persistNames :: DbConn -> Int -> [NameRecord] -> IO ()
 persistNames conn moduleId names = do
-    astIds <- persistAst conn (map convertLocation names)
+    astIds <- persistAst conn (map (FullRange moduleId . nmPos) names)
     persistName conn (map convertName (names `zip` astIds))
   where
-    convertName ((NameRecord name namespace isDefined definition _), id) =
-      (moduleId, id :: Int, name, fmap fromEnum namespace, isDefined, fmap npStartRow definition, fmap npStartCol definition, fmap npEndRow definition, fmap npEndCol definition)
-    convertLocation (NameRecord { nmPos = NodePos startRow startColumn endRow endColumn }) =
-      (moduleId, startRow, startColumn, endRow, endColumn)
+    convertName ((NameRecord name isDefined definition _), id) =
+      (moduleId, id :: Int, name, isDefined, definition)
 
 storeTypes :: StoreParams -> TcGblEnv -> IO ()
 storeTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) env = do
@@ -113,7 +110,7 @@ storeTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) env = do
     mapM_ print uniqueTypes
   persistTypes conn (map convertType uniqueTypes)
   where
-    convertType (TypeRecord name namespace typ) = (name, fmap fromEnum namespace, typ)
+    convertType (TypeRecord name typ) = (name, typ)
 
 storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
 storeTHNamesAndTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) expr = do
@@ -128,20 +125,19 @@ storeTHNamesAndTypes sp@(StoreParams verbosity _ (moduleName, moduleId)) expr = 
 
 persistNamesAndTypes :: DbConn -> Int -> [NameAndTypeRecord] -> IO ()
 persistNamesAndTypes conn moduleId namesAndTypes = do
-    astIds <- persistAst conn (map convertLocation namesAndTypes)
+    astIds <- persistAst conn (map (FullRange moduleId . ntrPos) namesAndTypes)
     persistName conn (map convertName (namesAndTypes `zip` astIds))
     persistTypes conn (catMaybes $ map convertType namesAndTypes)
   where
-    convertName (NameAndTypeRecord { ntrName, ntrNamespace, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, fmap fromEnum ntrNamespace, ntrIsDefined, Nothing, Nothing, Nothing, Nothing)
-    convertType (NameAndTypeRecord { ntrName, ntrNamespace, ntrType }) = fmap (ntrName, fmap fromEnum ntrNamespace, ) ntrType
-    convertLocation (NameAndTypeRecord { ntrPos = NodePos startRow startColumn endRow endColumn })
-      = (moduleId, startRow, startColumn, endRow, endColumn)
+    convertName (NameAndTypeRecord { ntrName, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, ntrIsDefined, Nothing)
+    convertType (NameAndTypeRecord { ntrName, ntrType }) = fmap (ntrName, ) ntrType
 
 persistTHRange :: DbConn -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
 persistTHRange conn (RealSrcSpan sp) moduleId records = do
   let nodePos = realSrcSpanToNodePos sp
+      fullRange = FullRange moduleId nodePos
   astNode <- if nodePos `elem` (map ntrPos records)
-    then getAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
-    else insertAstId conn moduleId (npStartRow nodePos) (npStartCol nodePos) (npEndRow nodePos) (npEndCol nodePos)
+    then getAstId conn fullRange
+    else insertAstId conn fullRange
   persistTHRange' conn moduleId astNode
 persistTHRange _ _ _ _ = return () 
