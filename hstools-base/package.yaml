@@ -32,15 +32,15 @@ library:
     - Language.Haskell.HsTools.SourcePosition
     - Language.Haskell.HsTools.FileLines
   dependencies:
-    - postgresql-simple
-    - time
     - bytestring
     - containers
-    - exceptions
-    - directory
     - Diff
-    - split
+    - directory
+    - exceptions
     - filepath
+    - postgresql-simple
+    - split
+    - time
   ghc-options:
     - -W
     - -Werror

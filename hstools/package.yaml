@@ -34,16 +34,17 @@ library:
     - Language.Haskell.HsTools.Plugin.StoreComments
     - Language.Haskell.HsTools.Plugin.Types
   dependencies:
-    - hstools-base
-    - ghc
-    - postgresql-simple
-    - mtl
-    - filepath
-    - directory
     - bytestring (>=0.9.2 && <0.11)
-    - time
     - containers
+    - directory
+    - filepath
+    - ghc
+    - hstools-base
+    - mtl
+    - optparse-applicative
+    - postgresql-simple
     - text
+    - time
   ghc-options:
     - -W
     - -Werror

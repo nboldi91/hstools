@@ -212,7 +212,7 @@ tryToConnectToDB = do
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
     Right conn -> lspHandleErrors conn "tryToConnectToDB" $ do 
-      let dbConn = DbConn (debugFileLogger (cfLogFilePath config) $ cfVerbosity config) conn
+      let dbConn = DbConn (cfLogOptions config) conn
       liftIO $ reinitializeTablesIfNeeded dbConn
       modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged dbConn
       let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs

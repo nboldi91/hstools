@@ -1,5 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE QuasiQuotes #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Language.Haskell.HsTools.Database where
 
@@ -13,7 +14,7 @@ import Database.PostgreSQL.Simple hiding (query, query_, execute_, execute, exec
 import qualified Database.PostgreSQL.Simple as PLSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 
-import Language.Haskell.HsTools.Utils (DbConn(..))
+import Language.Haskell.HsTools.Utils (DbConn(..), LogOptions(..), createLogger)
 import Language.Haskell.HsTools.SourcePosition (Range(..), startLine, startCol, endLine, endCol)
 
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
@@ -42,28 +43,30 @@ isSignatureDef DefSignature = True
 isSignatureDef DefClassOpSignature = True
 isSignatureDef _ = False
 
-getCompiledTime :: DbConn -> FilePath -> IO (Maybe UTCTime)
-getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn
+getCompiledTime :: DbConn -> (String, String) -> IO (Maybe UTCTime)
+getCompiledTime conn mod = fmap (fmap head . listToMaybe) $ query conn
   [sql|
     SELECT compiledTime
     FROM modules
-    WHERE filePath = ?
+      WHERE moduleName = ?
+        AND unitId = ?
   |]
-  (Only filePath)
+  mod
 
-getModuleIdLoadingState :: DbConn -> FilePath -> IO (Maybe (Int, LoadingState))
-getModuleIdLoadingState conn filePath = do
+getModuleIdLoadingState :: DbConn -> (String, String) -> IO (Maybe (Int, LoadingState))
+getModuleIdLoadingState conn mod = do
   res <- query conn
     [sql| 
       SELECT moduleId, loadingState
       FROM modules
-      WHERE filePath = ?
+      WHERE moduleName = ?
+        AND unitId = ?
     |]
-    (Only filePath)
+    mod
   return $ case res of
     [(moduleId, loadingState)] -> Just (moduleId, toEnum loadingState)
     [] -> Nothing
-    _ -> error "getModuleIdLoadingState: filePath should be unique"
+    mods -> error $ "getModuleIdLoadingState: module name and package id should be unique, " ++ show mod ++ ": " ++ show mods
 
 updateLoadingState :: DbConn -> Int -> LoadingState -> IO ()
 updateLoadingState conn moduleId newLoadingState =
@@ -87,7 +90,10 @@ updateFileDiffs conn filePath modifiedTime serializedDiff =
 
 getAllModifiedFileDiffs :: DbConn -> IO [(FilePath, Maybe String, Maybe UTCTime)]
 getAllModifiedFileDiffs conn = query_ conn
-  [sql| SELECT filePath, modifiedFileDiffs, modifiedTime FROM modules |]
+  [sql|
+    SELECT filePath, modifiedFileDiffs, modifiedTime
+    FROM modules
+  |]
 
 getCompiledSource :: DbConn -> FilePath -> IO (Maybe String)
 getCompiledSource conn filePath
@@ -408,6 +414,7 @@ reinitializeTablesIfNeeded conn = do
 reinitializeTables :: DbConn -> IO ()
 reinitializeTables conn = do
   void $ execute_ conn "DROP OWNED BY SESSION_USER"
+  void $ try @SomeException $ execute_ conn "TRUNCATE version"
   initializeTables conn
 
 initializeTables :: DbConn -> IO ()
@@ -524,39 +531,52 @@ databaseSchema = [sql|
 
 execute :: (ToRow q, Show q) => DbConn -> Query -> q -> IO Int64
 execute conn query input =
-  wrapLogging (dbConnLogger conn) ("execute: " ++ show query) $
+  wrapLogging conn ("execute: " ++ show query ++ fullData) $
     PLSQL.execute (dbConnConnection conn) query input
+  where
+    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
 execute_ :: DbConn -> Query -> IO Int64
 execute_ conn query =
-  wrapLogging (dbConnLogger conn) ("execute_: " ++ show query) $
+  wrapLogging conn ("execute_: " ++ show query) $
     PLSQL.execute_ (dbConnConnection conn) query
 
 executeMany :: (ToRow q, Show q) => DbConn -> Query -> [q] -> IO Int64
 executeMany conn query input =
-  wrapLogging (dbConnLogger conn) ("executeMany: " ++ show query ++ " with inputs " ++ show input) $
+  wrapLogging conn ("executeMany: " ++ show query ++ fullData) $
     PLSQL.executeMany (dbConnConnection conn) query input
+  where
+    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
 query :: (ToRow q, FromRow r, Show q) => DbConn -> Query -> q -> IO [r]
 query conn query input =
-  wrapLogging (dbConnLogger conn) ("query: " ++ show query ++ " with inputs " ++ show input) $
+  wrapLogging conn ("query: " ++ show query ++ fullData) $
     PLSQL.query (dbConnConnection conn) query input
+  where
+    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
 query_ :: FromRow r => DbConn -> Query -> IO [r]
 query_ conn query =
-  wrapLogging (dbConnLogger conn) ("query_: " ++ show query) $
+  wrapLogging conn ("query_: " ++ show query) $
     PLSQL.query_ (dbConnConnection conn) query
 
 returning :: (ToRow q, FromRow r, Show q) => DbConn -> Query -> [q] -> IO [r]
 returning conn query input =
-  wrapLogging (dbConnLogger conn) ("returning: " ++ show query ++ " with inputs " ++ show input) $
+  wrapLogging conn ("returning: " ++ show query ++ fullData) $
     PLSQL.returning (dbConnConnection conn) query input
+  where
+    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
-wrapLogging :: (String -> IO ()) -> String -> IO a -> IO a
-wrapLogging logger query action = do
-  logger $ "Executing " ++ query
-  startTime <- getCurrentTime
-  res <- action
-  endTime <- getCurrentTime
-  logger $ "Query took " ++ show (diffUTCTime endTime startTime) ++ " seconds"
-  return res
+wrapLogging :: DbConn -> String -> IO a -> IO a
+wrapLogging conn query action = do
+    when (logOptionsQueries logOptions || logOptionsPerformance logOptions) $
+      logger $ "Executing " ++ query
+    startTime <- getCurrentTime
+    res <- action
+    endTime <- getCurrentTime
+    when (logOptionsPerformance logOptions) $
+      logger $ "Query took " ++ show (diffUTCTime endTime startTime) ++ " seconds"
+    return res
+  where
+    logger = createLogger logOptions
+    logOptions = dbConnLogOptions conn

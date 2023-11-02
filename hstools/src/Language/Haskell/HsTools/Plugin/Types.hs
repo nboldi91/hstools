@@ -8,7 +8,7 @@ import Name
 import SrcLoc
 
 import Language.Haskell.HsTools.Database
-import Language.Haskell.HsTools.Utils (Verbosity(..), DbConn(..), debugStdOutLogger)
+import Language.Haskell.HsTools.Utils (LogOptions(..), DbConn(..))
 import Language.Haskell.HsTools.SourcePosition (Range(..), SP(..))
 
 data ParseRecord
@@ -47,13 +47,13 @@ data NameAndTypeRecord = NameAndTypeRecord
   } deriving (Show, Eq, Ord)
 
 data StoreParams = StoreParams
-  { spVerbosity :: Verbosity
+  { spLogOptions :: LogOptions
   , spConnection :: Connection
   , spModule :: (String, Int)
   }
 
 storeParamsDbConn :: StoreParams -> DbConn
-storeParamsDbConn sp = DbConn (debugStdOutLogger $ spVerbosity sp) (spConnection sp)
+storeParamsDbConn sp = DbConn (spLogOptions sp) (spConnection sp)
 
 containsNP :: Range NodePos -> Range NodePos -> Bool
 Range (SP sr1 sc1) (SP er1 ec1) `containsNP` Range (SP sr2 sc2) (SP er2 ec2)

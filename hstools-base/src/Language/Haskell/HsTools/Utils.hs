@@ -9,20 +9,36 @@ import Database.PostgreSQL.Simple
 import System.Directory
 import System.FilePath
 
--- | Verbosity level (common option between plugin and server)
-data Verbosity = VerbositySilent | VerbosityVerbose | VerbosityDebug
+-- | Logging options, common for plugin and server
+data LogOptions = LogOptions
+  { logOptionsHighLevel :: Bool
+  , logOptionsQueries :: Bool
+  , logOptionsPerformance :: Bool
+  , logOptionsFullData :: Bool
+  , logOptionsOutputFile :: Maybe FilePath
+  }
   deriving (Eq, Ord, Show, Read)
 
+defaultLogOptions = LogOptions
+  { logOptionsHighLevel = False
+  , logOptionsQueries = False
+  , logOptionsPerformance = False
+  , logOptionsFullData = False
+  , logOptionsOutputFile = Nothing
+  }
+
 -- | Everything we need for running database operations
-data DbConn = DbConn { dbConnLogger :: String -> IO (), dbConnConnection :: Connection } 
+data DbConn = DbConn
+  { dbConnLogOptions :: LogOptions
+  , dbConnConnection :: Connection
+  }
 
--- | Logger that logs to standard output (used for plugin) 
-debugStdOutLogger :: Verbosity -> (String -> IO ())
-debugStdOutLogger verbosity = if verbosity >= VerbosityDebug then putStrLn else const (return ())
-
--- | Logger that logs to a specified file (used by server)
-debugFileLogger :: FilePath -> Verbosity -> (String -> IO ())
-debugFileLogger logFile verbosity = if verbosity >= VerbosityDebug then appendFile logFile . (++"\n") else const (return ())
+-- | Create a logger function from log options
+createLogger :: LogOptions -> (String -> IO ())
+createLogger logOptions =
+  (case logOptionsOutputFile logOptions of
+    Just logFile -> appendFile logFile
+    Nothing -> putStrLn) . (++ "\n")
 
 readFileContent :: FilePath -> IO (Maybe String)
 readFileContent filePath = do
@@ -61,5 +77,5 @@ withTestRepo baseConnString dbName test = do
     createAndRun conn = void $ do
       execute_ conn (fromString $ "CREATE DATABASE " ++ dbName) 
       testConn <- connectPostgreSQL (BS.pack $ baseConnString ++ "/" ++ dbName)
-      test (DbConn (debugStdOutLogger VerbositySilent) testConn)
+      test (DbConn defaultLogOptions testConn)
       close testConn

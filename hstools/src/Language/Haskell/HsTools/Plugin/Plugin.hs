@@ -10,6 +10,9 @@ import qualified Data.ByteString.Char8 as BS
 import Data.Maybe
 import Data.Time.Clock
 import Database.PostgreSQL.Simple (Connection, withTransaction, connectPostgreSQL)
+import Options.Applicative
+import Options.Applicative.Builder (defaultPrefs)
+import Options.Applicative.Help.Chunk (stringChunk, (<</>>))
 import System.Directory
 
 import qualified FastString as FS
@@ -21,7 +24,6 @@ import TcRnTypes
 import Module
 import HsExpr
 import IOEnv
-import SrcLoc
 
 import Language.Haskell.HsTools.Plugin.StoreInfo
 import Language.Haskell.HsTools.Plugin.Types
@@ -31,20 +33,34 @@ import Language.Haskell.HsTools.Utils
 
 plugin :: Plugin
 plugin = defaultPlugin 
-    { parsedResultAction = parsedAction
-    , renamedResultAction = renamedAction
-    , typeCheckResultAction = typeCheckAction
+    { parsedResultAction = curry . wrapOptions parsedAction
+    , renamedResultAction = curry . wrapOptions renamedAction
+    , typeCheckResultAction = curry . wrapOptions typeCheckAction
     , pluginRecompile = const $ return NoForceRecompile
-    , spliceRunAction = spliceAction
+    , spliceRunAction = wrapOptions spliceAction
     }
 
-withDB :: MonadIO m => [CommandLineOption] -> (Connection -> m a) -> m a
-withDB [] _ = error "Cannot connect to DB, no connection string"
-withDB (connectionString:_) action = do
-    conn <- liftIO (connectPostgreSQL (BS.pack connectionString))
-    action conn
+wrapOptions :: MonadIO m => (PluginOptions -> c -> m a) -> [CommandLineOption] -> c -> m a
+wrapOptions action opts input = do
+  let parserInfo = info pluginOptions fullDesc
+  let parserResult = execParserPure defaultPrefs parserInfo opts
+  options <- liftIO $ handleParseResult $ addPluginWarning parserResult
+  action options input
+  where
+    addPluginWarning = overFailure $ \p -> p { helpFooter = helpFooter p <</>> stringChunk warning }
+    warning = "Please don't forget to add the \"Language.Haskell.HsTools.Plugin:\" prefix to all plugin options."
 
-cleanAndRecordModule :: DbConn -> ModSummary -> IO (Maybe FilePath)
+data PluginOptions = PluginOptions
+  { poConnectionString :: String
+  , poLogOptions :: LogOptions
+  }
+
+withDB :: MonadIO m => PluginOptions -> (Connection -> m a) -> m a
+withDB pluginOpts action = do
+  conn <- liftIO $ connectPostgreSQL $ BS.pack $ poConnectionString pluginOpts
+  action conn
+
+cleanAndRecordModule :: DbConn -> ModSummary -> IO ()
 cleanAndRecordModule conn ms = do
   let Module unitId moduleName = ms_mod ms
   case ml_hs_file $ ms_location ms of
@@ -52,7 +68,7 @@ cleanAndRecordModule conn ms = do
       fullPath <- canonicalizePath filePath
       maybeModificationTime <- getFileModificationTime fullPath
       currentTime <- getCurrentTime
-      compiledTime <- getCompiledTime conn fullPath
+      compiledTime <- getCompiledTime conn (moduleNameString moduleName, unitIdString unitId)
       needsUpdate <- case (compiledTime, maybeModificationTime) of
         (Just dbModDate, Just modificationTime) ->
           if dbModDate < modificationTime
@@ -63,70 +79,86 @@ cleanAndRecordModule conn ms = do
         _ -> do
           putStrLn $ "File " ++ fullPath ++ " not processed yet."
           return True
-      if needsUpdate
-          then do
-            content <- readFileContent fullPath
-            Just <$> insertModule conn fullPath (fromMaybe currentTime maybeModificationTime) (moduleNameString moduleName) (unitIdString unitId) (fromMaybe "" content)
-          else return Nothing
-      return $ Just fullPath
-    Nothing -> return Nothing
+      when needsUpdate $ do
+        content <- readFileContent fullPath
+        void $ insertModule conn fullPath (fromMaybe currentTime maybeModificationTime) (moduleNameString moduleName) (unitIdString unitId) (fromMaybe "" content)
+    Nothing -> return ()
 
-parsedAction :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-parsedAction clOpts ms mod = liftIO $ do
-  when (optionsVerbosity clOpts >= VerbosityVerbose) $ putStrLn $ "Starting stage: parsedAction"
-  withDB clOpts $ \conn -> do
-    let dbConn = DbConn (debugStdOutLogger $ optionsVerbosity clOpts) conn
+parsedAction :: PluginOptions -> (ModSummary, HsParsedModule) -> Hsc HsParsedModule
+parsedAction options (ms, mod) = liftIO $ do
+  withDB options $ \conn -> do
+    let dbConn = DbConn (poLogOptions options) conn
     ioHandleErrors conn "parsedAction" $ do
       reinitializeTablesIfNeeded dbConn
-      moduleFilePath <- cleanAndRecordModule dbConn ms
-      let modName = moduleNameString $ ms_mod_name ms
-      case moduleFilePath of
-        Just fp -> doRunStage (optionsVerbosity clOpts) conn "parse" fp modName (< SourceSaved) SourceSaved (flip storeParsed mod)
-        Nothing -> return ()
+      cleanAndRecordModule dbConn ms
+      doRunStage (poLogOptions options) conn "parse" (ms_mod ms) (< SourceSaved) SourceSaved (flip storeParsed mod)
   return mod
 
-renamedAction :: [CommandLineOption] -> TcGblEnv -> HsGroup GhcRn -> TcM (TcGblEnv, HsGroup GhcRn)
-renamedAction clOpts env group = do
+renamedAction :: PluginOptions -> (TcGblEnv, HsGroup GhcRn) -> TcM (TcGblEnv, HsGroup GhcRn)
+renamedAction options (env, group) = do
   let exports = maybe [] (map fst) $ tcg_rn_exports env
   let imports = tcg_rn_imports env
-  runStage clOpts "rename" (<= NamesLoaded) NamesLoaded (flip storeNames (exports, imports, group))
+  runStage options "rename" (<= NamesLoaded) NamesLoaded (flip storeNames (exports, imports, group))
   return (env, group)
 
-typeCheckAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-typeCheckAction clOpts _ env = do
-  runStage clOpts "typeCheck" (< TypesLoaded) TypesLoaded (flip storeTypes env)
-  runStage clOpts "main" (== TypesLoaded) TypesLoaded $ flip storeMain $ tcg_main env
+typeCheckAction :: PluginOptions -> (ModSummary, TcGblEnv) -> TcM TcGblEnv
+typeCheckAction options (_, env) = do
+  runStage options "typeCheck" (< TypesLoaded) TypesLoaded (flip storeTypes env)
+  runStage options "main" (== TypesLoaded) TypesLoaded $ flip storeMain $ tcg_main env
   return env
 
-spliceAction :: [CommandLineOption] -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
-spliceAction clOpts expr = do
-  runStage clOpts "splice" (<= NamesLoaded) NamesLoaded (flip storeTHNamesAndTypes expr)
+spliceAction :: PluginOptions -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
+spliceAction options expr = do
+  runStage options "splice" (<= NamesLoaded) NamesLoaded (flip storeTHNamesAndTypes expr)
   return expr
   
-runStage :: [CommandLineOption] -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> TcM ()
-runStage clOpts caption condition newStage action = withDB clOpts $ \conn -> do
-  when (optionsVerbosity clOpts >= VerbosityVerbose) $
-    liftIO $ putStrLn $ "Starting stage: " ++ caption
+runStage :: PluginOptions -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> TcM ()
+runStage options caption condition newStage action = withDB options $ \conn -> do
   env <- getEnv
   let mod = tcg_mod $ env_gbl env
-      modName = moduleNameString $ moduleName mod
-      localFilePath = FS.unpackFS $ srcSpanFile $ tcg_top_loc $ env_gbl env
-  fullFilePath <- liftIO $ canonicalizePath localFilePath
-  liftIO $ doRunStage (optionsVerbosity clOpts) conn caption fullFilePath modName condition newStage action
+  liftIO $ doRunStage (poLogOptions options) conn caption mod condition newStage action
 
-doRunStage :: Verbosity -> Connection -> String -> FilePath -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
-doRunStage verbosity conn caption fullFilePath modName condition newStage action = do
-  let dbConn = DbConn (debugStdOutLogger verbosity) conn
-  ioHandleErrors conn ("plugin: " ++ caption) $ withTransaction conn $ do
-    moduleIdAndState <- getModuleIdLoadingState dbConn fullFilePath
+doRunStage :: LogOptions -> Connection -> String -> Module -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
+doRunStage logOptions conn caption mod condition newStage action = do
+  let dbConn = DbConn logOptions conn
+      modName = moduleNameString $ moduleName mod
+      modId = moduleUnitId mod
+  ioHandleErrors conn ("plugin: " ++ caption) $ logStageTime caption modName logOptions $ withTransaction conn $ do
+    moduleIdAndState <- getModuleIdLoadingState dbConn (modName, FS.unpackFS $ unitIdFS modId)
     case moduleIdAndState of
       Just (modId, status) | condition status -> do 
-        action $ StoreParams verbosity conn (modName, modId)
+        action $ StoreParams logOptions conn (modName, modId)
         void $ updateLoadingState dbConn modId newStage
-      Nothing -> putStrLn $ "[" ++ caption ++ "] WARNING: Module is not in the DB: " ++ modName
+      Nothing -> putStrLn $ "[" ++ caption ++ "] WARNING: Module is not in the DB: " ++ modName ++
+                  " this probably means that some problem happened in the earlier stages of the compilation"
       Just _ -> return ()
 
-optionsVerbosity :: [CommandLineOption] -> Verbosity
-optionsVerbosity (_:"verbose":_) = VerbosityVerbose
-optionsVerbosity (_:"debug":_) = VerbosityDebug
-optionsVerbosity _ = VerbositySilent
+logStageTime :: String -> String -> LogOptions -> IO () -> IO ()
+logStageTime stage mod logOptions action = do
+    when (logOptionsHighLevel logOptions) $
+      logger $ "Running stage " ++ stage ++ " on module " ++ mod
+    startTime <- getCurrentTime
+    res <- action
+    endTime <- getCurrentTime
+    when (logOptionsPerformance logOptions) $
+      logger $ "Stage " ++ stage ++ " took " ++ show (diffUTCTime endTime startTime) ++ " seconds"
+    return res
+  where logger = createLogger logOptions
+
+pluginOptions :: Parser PluginOptions
+pluginOptions =
+  PluginOptions
+    <$> connectionStringOption
+    <*> logOption
+  where
+    connectionStringOption =
+      argument str
+        (metavar "DATABASE_CONNECTION_STRING" <>
+          help "Database connection string (for example: postgresql://saver:saver@127.0.0.1:5432/repo)")
+    logOption =
+      LogOptions
+        <$> switch (long "log-highlevel" <> help "Log high-level information, like when modules are processed")
+        <*> switch (long "log-queries" <> help "Log individual queries toward the database")
+        <*> switch (long "log-performance" <> help "Log performance-related information, like execution times")
+        <*> switch (long "log-data" <> help "Log the full data of the operations with each database record")
+        <*> optional ( strOption (long "log-file" <> help "Log file path") )
