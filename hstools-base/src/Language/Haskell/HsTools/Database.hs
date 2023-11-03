@@ -423,7 +423,7 @@ initializeTables :: DbConn -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 7
+databaseSchemaVersion = 9
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -453,7 +453,6 @@ databaseSchema = [sql|
 
   CREATE TABLE ast 
     ( module INT NOT NULL
-    , CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId)
     , astId SERIAL PRIMARY KEY
     , startRow INT NOT NULL
     , startColumn INT NOT NULL
@@ -461,13 +460,13 @@ databaseSchema = [sql|
     , endColumn INT NOT NULL
     );
 
+  CREATE INDEX ON ast USING HASH (module);
   CREATE INDEX ON ast USING BTREE (startRow, startColumn);
   CREATE INDEX ON ast USING BTREE (endRow, endColumn);
 
   CREATE TABLE names 
     ( module INT NOT NULL
     , astNode INT NOT NULL
-    , CONSTRAINT fk_name_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
     , isDefined BOOL NOT NULL
     , namedDefinitionRow INT
     , namedDefinitionColumn INT
@@ -478,6 +477,8 @@ databaseSchema = [sql|
     , namespace INT
     );
 
+  CREATE INDEX ON names USING HASH (module);
+  CREATE INDEX ON names USING HASH (astNode);
   CREATE INDEX ON names USING BTREE (namedDefinitionRow, namedDefinitionColumn);
   CREATE INDEX ON names USING BTREE (namedDefinitionEndRow, namedDefinitionEndColumn);
   CREATE INDEX ON names USING HASH (name);
@@ -487,21 +488,22 @@ databaseSchema = [sql|
   CREATE TABLE definitions 
     ( definitionId SERIAL PRIMARY KEY
     , module INT
-    , CONSTRAINT fk_def_module FOREIGN KEY(module) REFERENCES modules(moduleId)
     , astNode INT
-    , CONSTRAINT fk_def_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
     , parentDefinition INT
-    , CONSTRAINT fk_def_parent FOREIGN KEY(parentDefinition) REFERENCES definitions(definitionId)
     , definitionKind INT NOT NULL
     );
+    
+  CREATE INDEX ON definitions USING HASH (module);
+  CREATE INDEX ON definitions USING HASH (astNode);
+  CREATE INDEX ON definitions USING HASH (parentDefinition);
 
   CREATE TABLE comments
     ( module INT NOT NULL
-    , CONSTRAINT fk_comment_module FOREIGN KEY(module) REFERENCES modules(moduleId)
     , targetDefinition INT NOT NULL
-    , CONSTRAINT fk_comment_def FOREIGN KEY(targetDefinition) REFERENCES definitions(definitionId)
     , commentText TEXT NOT NULL
     );
+
+  CREATE INDEX ON comments USING HASH (module);
 
   CREATE TABLE types 
     ( typedName TEXT NOT NULL
@@ -517,14 +519,17 @@ databaseSchema = [sql|
   CREATE TABLE thRanges 
     ( module INT NOT NULL
     , astNode INT NOT NULL
-    , CONSTRAINT fk_type_ast FOREIGN KEY(astNode) REFERENCES ast(astId)
     );
+
+  CREATE INDEX ON thRanges USING HASH (module);
+  CREATE INDEX ON thRanges USING HASH (astNode);
 
   CREATE TABLE mains 
     ( module INT NOT NULL
     , name TEXT NOT NULL
     );
 
+  CREATE INDEX ON mains USING HASH (module);
   CREATE INDEX ON mains USING HASH (name);
 
   CREATE OR REPLACE FUNCTION notifyModulesFunction()

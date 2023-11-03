@@ -89,7 +89,7 @@ parsedAction options (ms, mod) = liftIO $ do
     let dbConn = DbConn (poLogOptions options) conn
     ioHandleErrors conn "parsedAction" $ do
       reinitializeTablesIfNeeded dbConn
-      cleanAndRecordModule dbConn ms
+      withTransaction conn $ cleanAndRecordModule dbConn ms
       doRunStage (poLogOptions options) conn "parse" ms (< SourceSaved) SourceSaved (flip storeParsed mod)
   return mod
 
@@ -137,7 +137,7 @@ doRunStage logOptions conn caption ms condition newStage action = do
             void $ updateLoadingState dbConn modId newStage
           Nothing -> putStrLn $ "Warning: Module is not in the DB: " ++ modName ++
                       " this probably means that some problem happened in the earlier stages of the compilation"
-          Just _ -> putStrLn $ "Warning: Skipping stage " ++ caption ++ " for module " ++ modName ++ " the stages might be out-of-order"
+          Just _ -> return () -- already done, module or dependencies did not change
     Nothing -> putStrLn $ "Warning: haskell source not found for module " ++ modName
 
 logStageTime :: String -> String -> LogOptions -> IO () -> IO ()
