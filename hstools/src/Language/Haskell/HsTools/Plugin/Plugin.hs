@@ -15,14 +15,13 @@ import Options.Applicative.Builder (defaultPrefs)
 import Options.Applicative.Help.Chunk (stringChunk, (<</>>))
 import System.Directory
 
-import qualified FastString as FS
 import Plugins
 import HscTypes
 import HsDecls
 import HsExtension
 import TcRnTypes
 import Module
-import HsExpr
+import GHC
 import IOEnv
 
 import Language.Haskell.HsTools.Plugin.StoreInfo
@@ -68,7 +67,7 @@ cleanAndRecordModule conn ms = do
       fullPath <- canonicalizePath filePath
       maybeModificationTime <- getFileModificationTime fullPath
       currentTime <- getCurrentTime
-      compiledTime <- getCompiledTime conn (moduleNameString moduleName, unitIdString unitId)
+      compiledTime <- getCompiledTime conn fullPath
       needsUpdate <- case (compiledTime, maybeModificationTime) of
         (Just dbModDate, Just modificationTime) ->
           if dbModDate < modificationTime
@@ -82,7 +81,7 @@ cleanAndRecordModule conn ms = do
       when needsUpdate $ do
         content <- readFileContent fullPath
         void $ insertModule conn fullPath (fromMaybe currentTime maybeModificationTime) (moduleNameString moduleName) (unitIdString unitId) (fromMaybe "" content)
-    Nothing -> return ()
+    Nothing -> putStrLn $ "Warning: haskell source not found for module " ++ show moduleName
 
 parsedAction :: PluginOptions -> (ModSummary, HsParsedModule) -> Hsc HsParsedModule
 parsedAction options (ms, mod) = liftIO $ do
@@ -91,20 +90,23 @@ parsedAction options (ms, mod) = liftIO $ do
     ioHandleErrors conn "parsedAction" $ do
       reinitializeTablesIfNeeded dbConn
       cleanAndRecordModule dbConn ms
-      doRunStage (poLogOptions options) conn "parse" (ms_mod ms) (< SourceSaved) SourceSaved (flip storeParsed mod)
+      doRunStage (poLogOptions options) conn "parse" ms (< SourceSaved) SourceSaved (flip storeParsed mod)
   return mod
+
 
 renamedAction :: PluginOptions -> (TcGblEnv, HsGroup GhcRn) -> TcM (TcGblEnv, HsGroup GhcRn)
 renamedAction options (env, group) = do
   let exports = maybe [] (map fst) $ tcg_rn_exports env
   let imports = tcg_rn_imports env
+  -- Renamed action can be invoked multiple times to store the results after resolving template haskell
   runStage options "rename" (<= NamesLoaded) NamesLoaded (flip storeNames (exports, imports, group))
   return (env, group)
 
 typeCheckAction :: PluginOptions -> (ModSummary, TcGblEnv) -> TcM TcGblEnv
-typeCheckAction options (_, env) = do
-  runStage options "typeCheck" (< TypesLoaded) TypesLoaded (flip storeTypes env)
-  runStage options "main" (== TypesLoaded) TypesLoaded $ flip storeMain $ tcg_main env
+typeCheckAction options (ms, env) = withDB options $ \conn -> liftIO $ do
+  let performStage = doRunStage (poLogOptions options) conn
+  performStage "typeCheck" ms (< TypesLoaded) TypesLoaded (flip storeTypes env)
+  performStage "main" ms (== TypesLoaded) TypesLoaded $ flip storeMain $ tcg_main env
   return env
 
 spliceAction :: PluginOptions -> LHsExpr GhcTc -> TcM (LHsExpr GhcTc)
@@ -115,23 +117,28 @@ spliceAction options expr = do
 runStage :: PluginOptions -> String -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> TcM ()
 runStage options caption condition newStage action = withDB options $ \conn -> do
   env <- getEnv
-  let mod = tcg_mod $ env_gbl env
-  liftIO $ doRunStage (poLogOptions options) conn caption mod condition newStage action
+  let ms = mgLookupModule (hsc_mod_graph $ env_top env) (tcg_mod $ env_gbl env)
+  liftIO $ case ms of
+    Just ms' -> doRunStage (poLogOptions options) conn caption ms' condition newStage action
+    Nothing -> putStrLn $ "Warning: ModSummary not found for " ++ show (tcg_mod $ env_gbl env)
 
-doRunStage :: LogOptions -> Connection -> String -> Module -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
-doRunStage logOptions conn caption mod condition newStage action = do
+doRunStage :: LogOptions -> Connection -> String -> ModSummary -> (LoadingState -> Bool) -> LoadingState -> (StoreParams -> IO ()) -> IO ()
+doRunStage logOptions conn caption ms condition newStage action = do
   let dbConn = DbConn logOptions conn
-      modName = moduleNameString $ moduleName mod
-      modId = moduleUnitId mod
-  ioHandleErrors conn ("plugin: " ++ caption) $ logStageTime caption modName logOptions $ withTransaction conn $ do
-    moduleIdAndState <- getModuleIdLoadingState dbConn (modName, FS.unpackFS $ unitIdFS modId)
-    case moduleIdAndState of
-      Just (modId, status) | condition status -> do 
-        action $ StoreParams logOptions conn (modName, modId)
-        void $ updateLoadingState dbConn modId newStage
-      Nothing -> putStrLn $ "[" ++ caption ++ "] WARNING: Module is not in the DB: " ++ modName ++
-                  " this probably means that some problem happened in the earlier stages of the compilation"
-      Just _ -> return ()
+      modName = moduleNameString $ moduleName $ ms_mod ms
+  case ml_hs_file $ ms_location ms of
+    Just filePath -> do
+      filePath <- canonicalizePath filePath
+      ioHandleErrors conn ("plugin: " ++ caption) $ logStageTime caption modName logOptions $ withTransaction conn $ do
+        moduleIdAndState <- getModuleIdLoadingState dbConn filePath
+        case moduleIdAndState of
+          Just (modId, status) | condition status -> do 
+            action $ StoreParams logOptions conn (modName, modId)
+            void $ updateLoadingState dbConn modId newStage
+          Nothing -> putStrLn $ "Warning: Module is not in the DB: " ++ modName ++
+                      " this probably means that some problem happened in the earlier stages of the compilation"
+          Just _ -> putStrLn $ "Warning: Skipping stage " ++ caption ++ " for module " ++ modName ++ " the stages might be out-of-order"
+    Nothing -> putStrLn $ "Warning: haskell source not found for module " ++ modName
 
 logStageTime :: String -> String -> LogOptions -> IO () -> IO ()
 logStageTime stage mod logOptions action = do

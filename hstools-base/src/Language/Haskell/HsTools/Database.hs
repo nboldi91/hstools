@@ -43,30 +43,28 @@ isSignatureDef DefSignature = True
 isSignatureDef DefClassOpSignature = True
 isSignatureDef _ = False
 
-getCompiledTime :: DbConn -> (String, String) -> IO (Maybe UTCTime)
-getCompiledTime conn mod = fmap (fmap head . listToMaybe) $ query conn
+getCompiledTime :: DbConn -> FilePath -> IO (Maybe UTCTime)
+getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn
   [sql|
     SELECT compiledTime
     FROM modules
-      WHERE moduleName = ?
-        AND unitId = ?
+    WHERE filePath = ?
   |]
-  mod
+  (Only filePath)
 
-getModuleIdLoadingState :: DbConn -> (String, String) -> IO (Maybe (Int, LoadingState))
-getModuleIdLoadingState conn mod = do
+getModuleIdLoadingState :: DbConn -> FilePath -> IO (Maybe (Int, LoadingState))
+getModuleIdLoadingState conn filePath = do
   res <- query conn
     [sql| 
       SELECT moduleId, loadingState
       FROM modules
-      WHERE moduleName = ?
-        AND unitId = ?
+      WHERE filePath = ?
     |]
-    mod
+    (Only filePath)
   return $ case res of
     [(moduleId, loadingState)] -> Just (moduleId, toEnum loadingState)
     [] -> Nothing
-    mods -> error $ "getModuleIdLoadingState: module name and package id should be unique, " ++ show mod ++ ": " ++ show mods
+    mods -> error $ "getModuleIdLoadingState: filePath should be unique, " ++ show filePath ++ ": " ++ show mods
 
 updateLoadingState :: DbConn -> Int -> LoadingState -> IO ()
 updateLoadingState conn moduleId newLoadingState =
