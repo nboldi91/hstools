@@ -16,17 +16,20 @@ loadConfig :: Config -> A.Value -> Either T.Text Config
 loadConfig config (A.Object (A.lookup "hstools" -> (Just (A.Object assoc))))
   = Right $ config 
   { cfPostgresqlConnectionString = fromMaybe (cfPostgresqlConnectionString config) $
-      T.unpack <$> (fromString =<< lookup "postgresqlConnectionString")
+      T.unpack <$> (fromString =<< A.lookup "postgresqlConnectionString" assoc)
   , cfLogOptions =
     LogOptions
-      (fromMaybe (logOptionsHighLevel $ cfLogOptions config) $ fromBool =<< lookup "logOptions.highLevel")
-      (fromMaybe (logOptionsQueries $ cfLogOptions config) $ fromBool =<< lookup "logOptions.queries")
-      (fromMaybe (logOptionsPerformance $ cfLogOptions config) $ fromBool =<< lookup "logOptions.performance")
-      (fromMaybe (logOptionsFullData $ cfLogOptions config) $ fromBool =<< lookup "logOptions.fullData")
-      (fromMaybe (logOptionsOutputFile $ cfLogOptions config) $ fmap (emptyToNothing . T.unpack) (fromString =<< lookup "logOptions.logFilePath"))
+      (fromMaybe (logOptionsHighLevel $ cfLogOptions config) $ fromBool =<< lookupLogOption "highLevel")
+      (fromMaybe (logOptionsQueries $ cfLogOptions config) $ fromBool =<< lookupLogOption "queries")
+      (fromMaybe (logOptionsPerformance $ cfLogOptions config) $ fromBool =<< lookupLogOption "performance")
+      (fromMaybe (logOptionsFullData $ cfLogOptions config) $ fromBool =<< lookupLogOption "fullData")
+      (fromMaybe (logOptionsOutputFile $ cfLogOptions config) $ fmap (emptyToNothing . T.unpack) (fromString =<< lookupLogOption "logFilePath"))
   }
   where
-    lookup q = A.lookup q assoc
+    lookupLogOption k =
+      case A.lookup "logOptions" assoc of
+        Just (A.Object km) -> A.lookup k km
+        _ -> Nothing
     fromString (A.String t) = Just t
     fromString _ = Nothing
     emptyToNothing "" = Nothing

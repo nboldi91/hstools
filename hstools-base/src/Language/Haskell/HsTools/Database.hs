@@ -157,7 +157,8 @@ getAllNames conn =
         ON nn.astNode = n.astId
       LEFT JOIN types tt
         ON tt.typedName = nn.name
-        AND tt.typeNamespace = nn.namespace
+        AND ((tt.typedLocalName IS NULL AND nn.localName IS NULL) OR tt.typedLocalName = nn.localName)
+        AND tt.typedNamespace = nn.namespace
       ORDER BY startRow, startColumn
     |]
   where
@@ -198,7 +199,7 @@ persistName conn names = void $ executeMany conn
 persistTypes :: DbConn -> [(FullName, String)] -> IO ()
 persistTypes conn types = void $ executeMany conn
   [sql|
-    INSERT INTO types (typedName, typedLocalName, typeNamespace, type)
+    INSERT INTO types (typedName, typedLocalName, typedNamespace, type)
     VALUES (?, ?, ?, ?)
   |]
   (map convertType types)
@@ -306,6 +307,7 @@ getMatchingNames conn file row col onlyDefinitions = query conn queryWithIsDefin
                 ON nn.astNode = n.astId
               JOIN names AS dn
                 ON nn.name = dn.name
+                  AND ((nn.localName IS NULL AND dn.localName IS NULL) OR nn.localName = dn.localName)
                   AND nn.namespace = dn.namespace
               JOIN ast AS d
                 ON d.astId = dn.astNode
@@ -334,7 +336,8 @@ getHoverInfo conn file row col =
           ON n.module = nm.moduleId
         LEFT JOIN types tn
           ON nn.name = tn.typedName
-            AND nn.namespace = tn.typeNamespace
+            AND ((tn.typedLocalName IS NULL AND nn.localName IS NULL) OR nn.localName = tn.typedLocalName)
+            AND nn.namespace = tn.typedNamespace
         LEFT JOIN names dn
           ON nn.name = dn.name
             AND dn.isDefined = true
@@ -402,7 +405,8 @@ cleanRelatedData conn moduleId = void $ do
     ["mains", "definitions", "comments", "names", "thRanges", "ast"]
   execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
   -- TODO: this could be foreign key?
-  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typedLocalName = localName AND typeNamespace = namespace)"
+  -- FIXME: condition not update for local names
+  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typedLocalName = localName AND typedNamespace = namespace)"
 
 reinitializeTablesIfNeeded :: DbConn -> IO ()
 reinitializeTablesIfNeeded conn = do
@@ -421,7 +425,7 @@ initializeTables :: DbConn -> IO ()
 initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 6
+databaseSchemaVersion = 7
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -447,6 +451,8 @@ databaseSchema = [sql|
     , modifiedFileDiffs TEXT
     );
 
+  CREATE INDEX ON modules(unitId, moduleName);
+
   CREATE TABLE ast 
     ( module INT NOT NULL
     , CONSTRAINT fk_ast_module FOREIGN KEY(module) REFERENCES modules(moduleId)
@@ -456,6 +462,9 @@ databaseSchema = [sql|
     , endRow INT NOT NULL
     , endColumn INT NOT NULL
     );
+
+  CREATE INDEX ON ast USING BTREE (startRow, startColumn);
+  CREATE INDEX ON ast USING BTREE (endRow, endColumn);
 
   CREATE TABLE names 
     ( module INT NOT NULL
@@ -470,6 +479,12 @@ databaseSchema = [sql|
     , localName TEXT
     , namespace INT
     );
+
+  CREATE INDEX ON names USING BTREE (namedDefinitionRow, namedDefinitionColumn);
+  CREATE INDEX ON names USING BTREE (namedDefinitionEndRow, namedDefinitionEndColumn);
+  CREATE INDEX ON names USING HASH (name);
+  CREATE INDEX ON names USING HASH (localName);
+  CREATE INDEX ON names USING HASH (namespace);
 
   CREATE TABLE definitions 
     ( definitionId SERIAL PRIMARY KEY
@@ -493,9 +508,13 @@ databaseSchema = [sql|
   CREATE TABLE types 
     ( typedName TEXT NOT NULL
     , typedLocalName TEXT
-    , typeNamespace INT
+    , typedNamespace INT
     , type TEXT NOT NULL
     );
+
+  CREATE INDEX ON types USING HASH (typedName);
+  CREATE INDEX ON types USING HASH (typedLocalName);
+  CREATE INDEX ON types USING HASH (typedNamespace);
 
   CREATE TABLE thRanges 
     ( module INT NOT NULL
@@ -507,6 +526,8 @@ databaseSchema = [sql|
     ( module INT NOT NULL
     , name TEXT NOT NULL
     );
+
+  CREATE INDEX ON mains USING HASH (name);
 
   CREATE OR REPLACE FUNCTION notifyModulesFunction()
     RETURNS trigger
@@ -531,10 +552,8 @@ databaseSchema = [sql|
 
 execute :: (ToRow q, Show q) => DbConn -> Query -> q -> IO Int64
 execute conn query input =
-  wrapLogging conn ("execute: " ++ show query ++ fullData) $
+  wrapLogging conn ("execute: " ++ show query ++ " with inputs " ++ show input) $
     PLSQL.execute (dbConnConnection conn) query input
-  where
-    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
 execute_ :: DbConn -> Query -> IO Int64
 execute_ conn query =
@@ -550,10 +569,8 @@ executeMany conn query input =
 
 query :: (ToRow q, FromRow r, Show q) => DbConn -> Query -> q -> IO [r]
 query conn query input =
-  wrapLogging conn ("query: " ++ show query ++ fullData) $
+  wrapLogging conn ("query: " ++ show query ++ " with inputs " ++ show input) $
     PLSQL.query (dbConnConnection conn) query input
-  where
-    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
 
 query_ :: FromRow r => DbConn -> Query -> IO [r]
 query_ conn query =
