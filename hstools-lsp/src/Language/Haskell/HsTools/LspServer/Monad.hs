@@ -29,8 +29,13 @@ runInContext :: String -> LspMonad a -> LspM Config a
 runInContext operation action = do 
   cf <- LSP.getConfig
   when (logOptionsHighLevel $ cfLogOptions cf) $
-    liftIO $ createLogger (cfLogOptions cf) $ "Start operation: " ++ operation ++ "\n"
-  runReaderT action (LspContext { ctOperation = operation })
+    liftIO $ createLogger (cfLogOptions cf) $ "Start operation: " ++ operation
+  before <- liftIO getCurrentTime
+  res <- runReaderT action (LspContext { ctOperation = operation })
+  after <- liftIO getCurrentTime
+  when (logOptionsHighLevel (cfLogOptions cf) || logOptionsPerformance (cfLogOptions cf)) $
+    liftIO $ createLogger (cfLogOptions cf) $ "Operation took: " ++ show (diffUTCTime after before)
+  return res
 
 withConnection :: (DbConn -> LspMonad ()) -> LspMonad ()
 withConnection act = do

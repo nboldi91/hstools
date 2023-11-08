@@ -206,8 +206,11 @@ sendFileStates [] = return ()
 sendFileStates states 
   = liftLSP $ sendNotification changeFileStatesMethod $ createChangeFileStates states
 
+
 tryToConnectToDB :: LspMonad ()
 tryToConnectToDB = do
+  -- DO NOT LOG HERE, since the configuration might not be configured properly and logging to stdout breaks
+  -- the communication with the editor
   config <- liftLSP LSP.getConfig
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
