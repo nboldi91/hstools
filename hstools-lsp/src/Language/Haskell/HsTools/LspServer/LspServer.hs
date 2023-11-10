@@ -16,19 +16,19 @@ import Language.LSP.Types as LSP
 import Language.LSP.Logging as LSP
 import Control.Monad.IO.Class
 import Control.Monad
-import Control.Exception
+import Control.Lens (_1, (^.))
 import qualified Data.Text as T
 import qualified Data.Map as Map
-import Data.Maybe (isNothing, catMaybes)
+import Data.Maybe
 import Data.Time.Clock
 import Database.PostgreSQL.Simple (connectPostgreSQL, close)
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Vector as V
 import Control.Concurrent
+import Control.Monad.Catch
 import System.IO
 import qualified Colog.Core as L
-import Colog.Core (LogAction (..), WithSeverity (..))
 import Prettyprinter
 
 import Language.Haskell.HsTools.LspServer.State
@@ -43,13 +43,13 @@ import Language.Haskell.HsTools.Utils
 
 mainWithHandles :: Handle -> Handle -> IO Int
 mainWithHandles input output = do
-  fileStore <- newEmptyMVar
+  defaultConfig <- hsToolsDefaultConfig
 
   loggerChan <- newChan
 
-  let ioLogger :: LogAction IO (WithSeverity LspServerLog)
+  let ioLogger :: L.LogAction IO (L.WithSeverity LspServerLog)
       ioLogger = L.cmap (show . prettyMsg) (L.LogAction $ writeChan loggerChan)
-      lspLogger :: LogAction (LspM config) (WithSeverity LspServerLog)
+      lspLogger :: L.LogAction (LspM config) (L.WithSeverity LspServerLog)
       lspLogger =
         let clientLogger = L.cmap (fmap (T.pack . show . pretty)) LSP.defaultClientLogger
         in clientLogger <> L.hoistLogAction liftIO ioLogger
@@ -62,7 +62,7 @@ mainWithHandles input output = do
     , staticHandlers = handlers
     , interpretHandler = \env -> Iso (runLspT env) (liftIO)
     , options = hstoolsOptions
-    , LSP.defaultConfig = hsToolsDefaultConfig fileStore
+    , LSP.defaultConfig = defaultConfig
     }
   where prettyMsg l = "[" <> viaShow (L.getSeverity l) <> "] " <> pretty (L.getMsg l)
 
@@ -72,18 +72,19 @@ handlers = mconcat
 
   , notificationHandler SWorkspaceDidChangeConfiguration $ newNotificationThread $ \_ -> runInContext "ChangeConfiguration" $ do
       cfg <- liftLSP LSP.getConfig
-      when (isNothing (cfConnection cfg))
-        tryToConnectToDB
+      hasNoConnection <- liftIO $ isEmptyMVar (cfConnection cfg)
+      when hasNoConnection tryToConnectToDB
 
   , requestHandler SShutdown $ newRequestThread $ \_ responder -> do
       cfg <- LSP.getConfig
-      case cfConnection cfg of
+      maybeConn <- liftIO $ tryReadMVar (cfConnection cfg)
+      case maybeConn of
         Just conn -> liftIO $ close conn
         Nothing -> return ()
       responder $ Right Empty
       
   , requestHandler STextDocumentDefinition $ newRequestThread $ \(DefinitionParams (TextDocumentIdentifier uri) pos _ _) responder ->
-      handlerCtx "STextDocumentDefinition" $ \conn -> do
+    handlerCtx "STextDocumentDefinition" $ \conn -> do
       ensureFileLocationRequest uri responder $ \file -> do
         rewrites <- getRewrites file
         case newToOriginalPos rewrites (posToSP pos) of
@@ -128,6 +129,12 @@ handlers = mconcat
 
   -- TODO: cancelling the request that has been started
   , notificationHandler SCancelRequest $ newNotificationThread $ const $ return ()
+  -- , notificationHandler SCancelRequest $ \message -> handlerCtx "CancelRequest" $ \_conn -> do
+  --     let NotificationMessage _ _ (CancelParams (flattenId -> _token)) = message
+  --     return ()
+
+  -- already handled by LSP's withProgress
+  , notificationHandler SWindowWorkDoneProgressCancel $ const $ return ()
 
   , notificationHandler (SCustomMethod "TestNotification") $ newNotificationThread $ \_args -> handlerCtx "TestNotification" $ \_conn -> do
       liftIO $ forM_ [1..10] $ const $ threadDelay 1000000
@@ -137,7 +144,8 @@ handlers = mconcat
       liftIO $ forM_ [1..10] $ const $ threadDelay 1000000
       liftLSP $ responder $ Right "Test request response"
 
-  , notificationHandler (SCustomMethod "CleanDB") $ newNotificationThread $ \args -> handlerCtx "CleanDB" $ \conn -> do
+  , notificationHandler (SCustomMethod "CleanDB") $ \message -> handlerCtx "CleanDB" $ \conn -> do
+      let NotificationMessage _ _ args = message
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
           liftIO $ reinitializeTables conn
@@ -149,20 +157,28 @@ handlers = mconcat
 
   , notificationHandler SWorkspaceDidChangeWatchedFiles $ newNotificationThread $ \(DidChangeWatchedFilesParams (LSP.List fileChanges)) ->
     handlerCtx "FileChange" $ \conn -> do
-      forM_ fileChanges $ \(FileEvent uri _) -> ensureFileLocation uri $ \filePath -> do
-        isFileOpen <- liftLSP LSP.getConfig >>= liftIO . isFileOpen filePath . cfFileRecords
-        unless isFileOpen $ do
-          compiledSource <- liftIO $ getCompiledSource conn filePath
-          case compiledSource of
-            Just source -> do
-              updatedSource <- liftIO $ readFileContent filePath
-              let fileDiffs = maybe emptyDiffs (createSourceDiffs (SP 1 1) (SP 1 1) source) updatedSource
-              liftLSP LSP.getConfig >>= \cf -> liftIO $ replaceSourceDiffs filePath fileDiffs $ cfFileRecords cf
-              currentTime <- liftIO getCurrentTime
-              let serializedDiff = nothingIfEmpty $ serializeSourceDiffs fileDiffs
-              void $ liftIO $ updateFileDiffs conn filePath currentTime serializedDiff
-            Nothing -> return () -- the file is not compiled yet, nothing to do
-        updateFileStatesFor filePath
+      let numFiles = fromIntegral $ Prelude.length fileChanges
+      purgeRecordsForChangedFilesOnFailure conn $
+        LSP.withProgress "Synchronize database with file changes" LSP.Cancellable $ \report ->
+          forM_ ([1..] `zip` fileChanges) $ \(i, (FileEvent uri _)) -> do
+            ensureFileLocation uri $ \filePath -> do
+              isFileOpen <- liftLSP LSP.getConfig >>= liftIO . isFileOpen filePath . cfFileRecords
+              unless isFileOpen $ do
+                compiledSource <- liftIO $ getCompiledSource conn filePath
+                case compiledSource of
+                  Just source -> do
+                    updatedSource <- liftIO $ readFileContent filePath
+                    let fileDiffs = maybe emptyDiffs (createSourceDiffs (SP 1 1) (SP 1 1) source) updatedSource
+                    liftLSP LSP.getConfig >>= \cf -> liftIO $ replaceSourceDiffs filePath fileDiffs $ cfFileRecords cf
+                    currentTime <- liftIO getCurrentTime
+                    let serializedDiff = nothingIfEmpty $ serializeSourceDiffs fileDiffs
+                    void $ liftIO $ updateFileDiffs conn filePath currentTime serializedDiff
+                  Nothing -> return () -- the file is not compiled yet, nothing to do
+              updateFileStatesFor filePath
+            report $
+              ProgressAmount
+                (Just $ round $ 100.0 * fromIntegral i / fromIntegral numFiles)
+                (Just $ getUri uri <> " (" <> T.pack (show (i :: Int)) <> "/" <> T.pack (show (numFiles :: Int)) <> ")")
   
   , notificationHandler STextDocumentDidChange $ newNotificationThread $ \(DidChangeTextDocumentParams (VersionedTextDocumentIdentifier uri _version) (LSP.List changes)) ->
     handlerCtx "STextDocumentDidChange" $ \_ -> do
@@ -222,17 +238,54 @@ tryToConnectToDB = do
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
     Right conn -> lspHandleErrors conn "tryToConnectToDB" $ do 
+      -- set up connection
       let dbConn = DbConn (cfLogOptions config) conn
       liftIO $ reinitializeTablesIfNeeded dbConn
-      modifiedDiffs <- liftIO $ checkIfFilesHaveBeenChanged dbConn
-      let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
-      liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
-      liftLSP $ LSP.setConfig $ config { cfConnection = Just conn }
-      updateFileStates
+      liftIO $ putMVar (cfConnection config) conn
+      -- put up listener for module clean
       env <- getLspEnv
       liftIO $ listenToModuleClean dbConn
+      -- FIXME: should also use lifted lsp
       void $ liftIO $ forkIO (handleNotifications conn (cfFileRecords config) (resSendMessage env))
+      -- check file statuses
+      purgeRecordsForChangedFilesOnFailure dbConn $
+        LSP.withProgress "Check file status" LSP.Cancellable $ \report -> do 
+          modifiedDiffs <- checkIfFilesHaveBeenChanged dbConn report
+          let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
+          liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
+          updateFileStates
+
     Left (_ :: SomeException) -> return () -- error is OK
+
+checkIfFilesHaveBeenChanged :: DbConn -> (ProgressAmount -> LspMonad ()) -> LspMonad [(FilePath, SourceDiffs Original Modified)]
+checkIfFilesHaveBeenChanged conn report = do
+  diffs <- liftIO $ getAllModifiedFileDiffs conn
+  let numFiles = fromIntegral $ Prelude.length diffs
+  forM ([0..] `zip` diffs) $ \(i, diff@(fp, _, _)) -> do
+    res <- liftIO $ checkFileHaveBeenChanged conn diff
+    report $
+      ProgressAmount
+        (Just $ round $ 100.0 * fromIntegral i / fromIntegral numFiles)
+        (Just $ T.pack fp <> " (" <> T.pack (show (i :: Int)) <> "/" <> T.pack (show (numFiles :: Int)) <> ")")
+    return res
+
+purgeRecordsForChangedFilesOnFailure :: DbConn -> LspMonad () -> LspMonad ()
+purgeRecordsForChangedFilesOnFailure conn action =
+  action
+    `catch` \(_ :: LSP.ProgressCancelledException) -> purgeAndNotify
+    `catch` \e -> purgeAndNotify >> throwM (e :: SomeException)
+  where
+    purgeAndNotify = do
+      sendError "Checking file status failed, some files will be removed from the DB"
+      purgeRecordsForChangedFiles conn
+
+purgeRecordsForChangedFiles :: DbConn -> LspMonad ()
+purgeRecordsForChangedFiles conn = do
+  diffs <- liftIO $ getAllModifiedFileDiffs conn
+  liftIO $ forM_ diffs $ \diff -> do
+    modificationTime <- getFileLaterModificationTime diff
+    when (isJust modificationTime) $ cleanModuleFromDB conn $ diff ^. _1
+  updateFileStates
 
 hstoolsOptions :: Options
 hstoolsOptions = defaultOptions

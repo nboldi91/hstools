@@ -35,10 +35,10 @@ data DbConn = DbConn
 
 -- | Create a logger function from log options
 createLogger :: LogOptions -> (String -> IO ())
-createLogger logOptions =
-  (case logOptionsOutputFile logOptions of
-    Just logFile -> appendFile logFile
-    Nothing -> putStrLn) . (++ "\n")
+createLogger _logOptions = const (return ())
+  -- (case logOptionsOutputFile logOptions of
+  --   Just logFile -> appendFile logFile
+  --   Nothing -> putStrLn) . (++ "\n")
 
 readFileContent :: FilePath -> IO (Maybe String)
 readFileContent filePath = do

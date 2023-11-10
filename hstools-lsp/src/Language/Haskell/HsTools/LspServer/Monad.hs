@@ -45,11 +45,9 @@ runInContext operation action = do
 
 withConnection :: (DbConn -> LspMonad ()) -> LspMonad ()
 withConnection act = do
-  operation <- asks ctOperation
-  conn <- getDbConn
-  case conn of
-    Just conn -> act conn
-    Nothing -> sendError $ T.pack $ operation ++ " needs DB connection"
+  config <- LSP.getConfig
+  conn <- liftIO $ readMVar $ cfConnection config 
+  act $ DbConn (cfLogOptions config) conn
 
 -- TODO: save the thread id to let the user cancel them
 newRequestThread :: (LSP.MessageParams m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()) -> LSP.RequestMessage m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()
@@ -102,10 +100,22 @@ forkLsp action = do
   rio <- askRunInIO
   void $ liftIO $ forkIO $ rio action
 
-getDbConn :: LspMonad (Maybe DbConn)
-getDbConn = do 
-  config <- LSP.getConfig
-  return $ fmap (DbConn $ cfLogOptions config) $ cfConnection config
+-- | Lets the client know that an async progress was started and reports every part of the task finishing.
+-- The actual work is done in an async manner, with the after function being invoked on the final results.
+-- wrapWithProgress :: T.Text -> (a -> T.Text) -> (a -> LspMonad b) -> [a] -> ([b] -> LspMonad ()) -> LspMonad ()
+-- wrapWithProgress title elemTitle f elems after = do
+--   cf <- LSP.getConfig
+--   let token = LSP.ProgressNumericToken $ fromIntegral $ cfProcessToken cf
+--   rio <- askRunInIO 
+--   threadId <- liftIO $ forkIO $ void $ rio $ sendRequest LSP.SWindowWorkDoneProgressCreate (LSP.WorkDoneProgressCreateParams token) $ \_ -> do
+--     sendNotification LSP.SProgress $ LSP.ProgressParams token $ LSP.Begin $ LSP.WorkDoneProgressBeginParams title (Just True) (Just $ title <> " starting") (Just 0)
+--     allResults <- forM ([1..] `zip` elems) $ \(i, elem) -> do
+--       sendNotification LSP.SProgress $ LSP.ProgressParams token $ LSP.Report $ LSP.WorkDoneProgressReportParams (Just True) (Just $ (T.pack $ show i) <> "/" <> (T.pack $ show $ length elems) <> " (" <> elemTitle elem <> ")") (Just $ round $ 100.0 * ((fromIntegral i) / (fromIntegral (length elems))))
+--       result <- f elem
+--       return result
+--     sendNotification LSP.SProgress $ LSP.ProgressParams token $ LSP.End $ LSP.WorkDoneProgressEndParams $ Just (title <> " done")
+--     after allResults
+--   LSP.setConfig $ cf { cfProcessToken = cfProcessToken cf + 1, cfProcesses = Map.insert token threadId $ cfProcesses cf  }
 
 handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
 handleErrorsCtx conn action = do

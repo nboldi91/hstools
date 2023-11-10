@@ -3,6 +3,7 @@
 
 module Language.Haskell.HsTools.LspServer.State where
 
+import Control.Concurrent.MVar
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
 import Data.Maybe (fromMaybe)
@@ -38,18 +39,21 @@ loadConfig config (A.Object (A.lookup "hstools" -> (Just (A.Object assoc))))
     fromBool _ = Nothing
 loadConfig _ v = Left $ T.pack $ "Cannot parse options: " ++ show v
 
-hsToolsDefaultConfig :: FileRecords -> Config
-hsToolsDefaultConfig fr = Config
-  { cfPostgresqlConnectionString = ""
-  , cfConnection = Nothing
-  , cfOperation = Nothing
-  , cfFileRecords = fr
-  , cfLogOptions = defaultLogOptions
-  }
+hsToolsDefaultConfig :: IO Config
+hsToolsDefaultConfig = do
+  fileRecords <- newEmptyMVar
+  connection <- newEmptyMVar
+  return $ Config
+    { cfPostgresqlConnectionString = ""
+    , cfConnection = connection
+    , cfOperation = Nothing
+    , cfFileRecords = fileRecords
+    , cfLogOptions = defaultLogOptions
+    }
 
 data Config = Config
   { cfPostgresqlConnectionString :: String
-  , cfConnection :: Maybe Connection
+  , cfConnection :: MVar Connection
   , cfOperation :: Maybe String
   , cfFileRecords :: FileRecords
   , cfLogOptions :: LogOptions

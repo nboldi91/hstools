@@ -70,23 +70,26 @@ isFileOpen fp frsMVar = do
     Just OpenFileRecord{} -> True
     _ -> False
 
-checkIfFilesHaveBeenChanged :: DbConn -> IO [(FilePath, SourceDiffs Original Modified)]
-checkIfFilesHaveBeenChanged conn = do 
-  diffs <- getAllModifiedFileDiffs conn
-  mapM (checkFileHaveBeenChanged conn) diffs
-  
 checkIfFileHaveBeenChanged :: DbConn -> FilePath -> IO (SourceDiffs Original Modified)
 checkIfFileHaveBeenChanged conn fp = do
   (diffs, time) <- getModifiedTimeAndFileDiffs conn fp
   snd <$> checkFileHaveBeenChanged conn (fp, diffs, time)
 
-checkFileHaveBeenChanged :: DbConn -> (FilePath, Maybe String, Maybe UTCTime) -> IO (FilePath, SourceDiffs Original Modified)
-checkFileHaveBeenChanged conn (filePath, diff, modifiedTime) = do
+-- | The modification time of a file if it is newer then we last checked, Nothing if the record has the latest version
+getFileLaterModificationTime :: (FilePath, Maybe String, Maybe UTCTime) -> IO (Maybe UTCTime)
+getFileLaterModificationTime (filePath, _, modifiedTime) = do
   modificationTime <- getFileModificationTime filePath
-  case (modifiedTime, modificationTime) of
-    (Just recTime, Just modTime) | recTime < modTime -> updateDiffs filePath modTime
-    (Nothing, Just modTime) -> updateDiffs filePath modTime
-    _ -> return (filePath, maybe emptyDiffs deserializeSourceDiffs diff)
+  return $ case (modifiedTime, modificationTime) of
+    (Just recTime, Just modTime) | recTime < modTime -> Just modTime
+    (Nothing, Just modTime) -> Just modTime
+    _ -> Nothing
+
+checkFileHaveBeenChanged :: DbConn -> (FilePath, Maybe String, Maybe UTCTime) -> IO (FilePath, SourceDiffs Original Modified)
+checkFileHaveBeenChanged conn r@(filePath, diff, _) = do
+  modificationTime <- getFileLaterModificationTime r
+  case modificationTime of
+    Just modTime -> updateDiffs filePath modTime
+    Nothing -> return (filePath, maybe emptyDiffs deserializeSourceDiffs diff)
   where
     updateDiffs filePath modificationTime = do
       fileContent <- readFileContent filePath
