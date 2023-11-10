@@ -1,8 +1,12 @@
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PolyKinds #-}
+
 module Language.Haskell.HsTools.LspServer.Monad where
 
-import Control.Concurrent.MVar
+import Control.Concurrent
 import Control.Monad.Catch
 import Control.Monad.Reader
+import Control.Monad.IO.Unlift
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Data.Time.Clock
@@ -20,7 +24,9 @@ import Language.Haskell.HsTools.Utils (LogOptions(..), DbConn(..), createLogger)
 
 data LspContext = LspContext { ctOperation :: String }
 
-type LspMonad = ReaderT LspContext (LspM Config)
+type Lsp = LspM Config
+
+type LspMonad = ReaderT LspContext Lsp
 
 liftLSP :: LspM Config a -> LspMonad a
 liftLSP = lift
@@ -44,6 +50,13 @@ withConnection act = do
   case conn of
     Just conn -> act conn
     Nothing -> sendError $ T.pack $ operation ++ " needs DB connection"
+
+-- TODO: save the thread id to let the user cancel them
+newRequestThread :: (LSP.MessageParams m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()) -> LSP.RequestMessage m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()
+newRequestThread f (LSP.RequestMessage _ _id _ params) responder = forkLsp $ f params responder
+
+newNotificationThread :: (LSP.MessageParams m -> Lsp ()) -> LSP.NotificationMessage m -> Lsp ()
+newNotificationThread f (LSP.NotificationMessage _ _ params) = forkLsp $ f params
 
 ensureFileLocationRequest :: LSP.Uri -> (Either LSP.ResponseError a -> LspM Config ()) -> (FilePath -> LspMonad ()) -> LspMonad ()
 ensureFileLocationRequest location responder action = case LSP.uriToFilePath location of
@@ -83,6 +96,11 @@ sendError = liftLSP . sendNotification LSP.SWindowShowMessage . LSP.ShowMessageP
 
 logMessage :: T.Text -> LspMonad ()
 logMessage = liftLSP . sendNotification LSP.SWindowLogMessage . LSP.LogMessageParams LSP.MtInfo
+
+forkLsp :: MonadUnliftIO m => m () -> m ()
+forkLsp action = do
+  rio <- askRunInIO
+  void $ liftIO $ forkIO $ rio action
 
 getDbConn :: LspMonad (Maybe DbConn)
 getDbConn = do 

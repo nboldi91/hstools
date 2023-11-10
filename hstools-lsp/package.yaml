@@ -47,6 +47,7 @@ library:
     - co-log-core
     - prettyprinter
     - exceptions
+    - unliftio-core
   ghc-options:
     - -W
     - -Werror
