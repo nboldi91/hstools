@@ -26,12 +26,12 @@ library:
   source-dirs: src
   exposed-modules:
     - Language.Haskell.HsTools.Plugin
-    - Language.Haskell.HsTools.Plugin.Plugin
-    - Language.Haskell.HsTools.Plugin.StoreInfo
     - Language.Haskell.HsTools.Plugin.Monad
+    - Language.Haskell.HsTools.Plugin.Plugin
     - Language.Haskell.HsTools.Plugin.Storable
     - Language.Haskell.HsTools.Plugin.StorableInstances
     - Language.Haskell.HsTools.Plugin.StoreComments
+    - Language.Haskell.HsTools.Plugin.StoreInfo
     - Language.Haskell.HsTools.Plugin.Types
   dependencies:
     - bytestring (>=0.9.2 && <0.11)
@@ -56,9 +56,10 @@ tests:
     ghc-options:
     - -threaded
     dependencies:
-    - hstools
-    - hstools-base
-    - HUnit
-    - HTF
     - ghc
     - ghc-paths
+    - hstools
+    - hstools-base
+    - HTF
+    - HUnit
+    - mtl

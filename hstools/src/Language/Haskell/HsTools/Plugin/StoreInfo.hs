@@ -41,103 +41,108 @@ import Language.Haskell.HsTools.Plugin.Storable
 import Language.Haskell.HsTools.Plugin.StorableInstances (generateFullName)
 import Language.Haskell.HsTools.Plugin.StoreComments
 import Language.Haskell.HsTools.Database
-import Language.Haskell.HsTools.Utils (DbConn, LogOptions(..))
+import Language.Haskell.HsTools.Utils (LogOptions(..))
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
 
-storeParsed :: StoreParams -> HsParsedModule -> IO ()
-storeParsed sp@(StoreParams logOptions _ (moduleName, moduleId)) md = do
-    let conn = storeParamsDbConn sp
-        modEnd = listToMaybe =<< Map.lookup (noSrcSpan, AnnEofPos) (fst $ hpm_annotations md)
+storeParsed :: HsParsedModule -> StoreStageM ()
+storeParsed md = do
+    StoreParams logOptions _ (_, moduleId) <- ask
+    let modEnd = listToMaybe =<< Map.lookup (noSrcSpan, AnnEofPos) (fst $ hpm_annotations md)
         modSpan = maybe id combineSrcSpans modEnd $ getLoc $ hpm_module md
         storeModule = storeLoc store (L modSpan (unLoc $ hpm_module md))
-    context <- defaultStoreContext conn moduleId moduleName (Just modSpan)
-    ((), defs) <- runWriterT (runReaderT storeModule context)
+    context <- defaultStoreContext (Just modSpan)
+    ((), defs) <- liftIO $ runWriterT $ runReaderT storeModule context
     let sortedDefs = nub $ sort defs
-    when (logOptionsFullData logOptions) $ do
+    when (logOptionsFullData logOptions) $ liftIO $ do
       putStrLn "Storing ast definitions:"
       mapM_ print sortedDefs
-    astIds <- persistAst conn (map convertLocation sortedDefs)
-    defIds <- persistDefinitions conn (catMaybes $ map convertDefinition $ sortedDefs `zip` astIds)
-    persistComments conn $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (sortedDefs `zip` defIds)
-    persistName conn (catMaybes $ map convertName (sortedDefs `zip` astIds))
-  where
-    convertLocation p = FullRange moduleId (prPos p)
-    convertDefinition ((ParseDefinitionRecord kind _), astId) = Just (moduleId, astId, kind)
-    convertDefinition _ = Nothing
-    convertName ((ParseModuleName mn _ isDefined definition), astId) =
-      Just (moduleId, astId :: Int, FullName mn Nothing (Just ModuleNS), isDefined, definition)
-    convertName _ = Nothing
+    let
+      convertLocation p = FullRange moduleId (prPos p)
+      convertDefinition ((ParseDefinitionRecord kind _), astId) = Just (moduleId, astId, kind)
+      convertDefinition _ = Nothing
+      convertName ((ParseModuleName mn _ isDefined definition), astId) =
+        Just (moduleId, astId :: Int, FullName mn Nothing (Just ModuleNS), isDefined, definition)
+      convertName _ = Nothing
+    withReaderT storeParamsDbConn $ do
+      astIds <- persistAst (map convertLocation sortedDefs)
+      defIds <- persistDefinitions (catMaybes $ map convertDefinition $ sortedDefs `zip` astIds)
+      persistComments $ findDefinitionOfComments moduleId (snd $ hpm_annotations md) (sortedDefs `zip` defIds)
+      persistName (catMaybes $ map convertName (sortedDefs `zip` astIds))
 
-storeNames :: StoreParams -> ([Located (IE GhcRn)], [LImportDecl GhcRn], HsGroup GhcRn) -> IO ()
-storeNames sp@(StoreParams logOptions _ (moduleName, moduleId)) gr = do
-  let conn = storeParamsDbConn sp
-  context <- defaultStoreContext conn moduleId moduleName Nothing
-  ((), names) <- runWriterT (runReaderT (store gr) context)
+storeNames :: ([Located (IE GhcRn)], [LImportDecl GhcRn], HsGroup GhcRn) -> StoreStageM ()
+storeNames gr = do
+  StoreParams logOptions _ (_, moduleId) <- ask
+  context <- defaultStoreContext Nothing
+  ((), names) <- liftIO $ runWriterT $ runReaderT (store gr) context
   let uniqueNames = Set.toList $ Set.fromList names
-  when (logOptionsFullData logOptions) $ do
+  when (logOptionsFullData logOptions) $ liftIO $ do
     putStrLn "Storing names:"
     mapM_ print uniqueNames
-  persistNames conn moduleId uniqueNames
+  withReaderT storeParamsDbConn $
+    persistNames moduleId uniqueNames
 
-storeMain :: StoreParams -> Maybe Name -> IO ()
-storeMain sp@(StoreParams logOptions _ (moduleName, moduleId)) (Just nm) = do
-  let conn = storeParamsDbConn sp
-  when (logOptionsFullData logOptions) $ do
+storeMain :: Maybe Name -> StoreStageM ()
+storeMain (Just nm) = do
+  StoreParams logOptions _ (moduleName, moduleId) <- ask
+  when (logOptionsFullData logOptions) $ liftIO $ do
     putStrLn $ "Storing main: " ++ show nm
-  persistMain conn moduleId (fnName $ generateFullName moduleName nm)
-storeMain _ Nothing = return ()
+  withReaderT storeParamsDbConn $
+    persistMain moduleId (fnName $ generateFullName moduleName nm)
+storeMain Nothing = return ()
 
-persistNames :: DbConn -> Int -> [NameRecord] -> IO ()
-persistNames conn moduleId names = do
-    astIds <- persistAst conn (map (FullRange moduleId . nmPos) names)
-    persistName conn (map convertName (names `zip` astIds))
+persistNames :: Int -> [NameRecord] -> PersistStageM ()
+persistNames moduleId names = do
+    astIds <- persistAst (map (FullRange moduleId . nmPos) names)
+    persistName (map convertName (names `zip` astIds))
   where
     convertName ((NameRecord name isDefined definition _), id) =
       (moduleId, id :: Int, name, isDefined, definition)
 
-storeTypes :: StoreParams -> TcGblEnv -> IO ()
-storeTypes sp@(StoreParams logOptions _ (moduleName, moduleId)) env = do
-  let conn = storeParamsDbConn sp
-  context <- defaultStoreContext conn moduleId moduleName Nothing
+storeTypes :: TcGblEnv -> StoreStageM ()
+storeTypes env = do
+  StoreParams logOptions _ _ <- ask
+  context <- defaultStoreContext Nothing
   let storeEnv = do
         store $ tcg_binds env
         store $ eltsUFM $ tcg_type_env env
-  ((), types) <- runWriterT (runReaderT storeEnv context)
+  ((), types) <- liftIO $ runWriterT $ runReaderT storeEnv context
   let uniqueTypes = Set.toList $ Set.fromList types
-  when (logOptionsFullData logOptions) $ do
+  when (logOptionsFullData logOptions) $ liftIO $ do
     putStrLn "Storing types:"
     mapM_ print uniqueTypes
-  persistTypes conn (map convertType uniqueTypes)
+  withReaderT storeParamsDbConn $
+    persistTypes (map convertType uniqueTypes)
   where
     convertType (TypeRecord name typ) = (name, typ)
 
-storeTHNamesAndTypes :: StoreParams -> LHsExpr GhcTc -> IO ()
-storeTHNamesAndTypes sp@(StoreParams logOptions _ (moduleName, moduleId)) expr = do
-    let conn = storeParamsDbConn sp
-    context <- defaultStoreContext conn moduleId moduleName Nothing
-    ((), namesAndTypes) <- runWriterT (runReaderT (store expr) context)
-    when (logOptionsFullData logOptions) $ do
+storeTHNamesAndTypes :: LHsExpr GhcTc -> StoreStageM ()
+storeTHNamesAndTypes expr = do
+    StoreParams logOptions _ (_, moduleId) <- ask
+    context <- defaultStoreContext Nothing
+    ((), namesAndTypes) <- liftIO $ runWriterT (runReaderT (store expr) context)
+    when (logOptionsFullData logOptions) $ liftIO $ do
       putStrLn "Storing names and types for TH:"
       mapM_ print namesAndTypes
-    persistNamesAndTypes conn moduleId namesAndTypes
-    persistTHRange conn (getLoc expr) moduleId namesAndTypes
+    withReaderT storeParamsDbConn $ do
+      persistNamesAndTypes moduleId namesAndTypes
+      persistTHRange (getLoc expr) moduleId namesAndTypes
 
-persistNamesAndTypes :: DbConn -> Int -> [NameAndTypeRecord] -> IO ()
-persistNamesAndTypes conn moduleId namesAndTypes = do
-    astIds <- persistAst conn (map (FullRange moduleId . ntrPos) namesAndTypes)
-    persistName conn (map convertName (namesAndTypes `zip` astIds))
-    persistTypes conn (catMaybes $ map convertType namesAndTypes)
+persistNamesAndTypes :: Int -> [NameAndTypeRecord] -> PersistStageM ()
+persistNamesAndTypes moduleId namesAndTypes = do
+    astIds <- persistAst (map (FullRange moduleId . ntrPos) namesAndTypes)
+    persistName (map convertName (namesAndTypes `zip` astIds))
+    persistTypes (catMaybes $ map convertType namesAndTypes)
   where
     convertName (NameAndTypeRecord { ntrName, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, ntrIsDefined, Nothing)
     convertType (NameAndTypeRecord { ntrName, ntrType }) = fmap (ntrName, ) ntrType
 
-persistTHRange :: DbConn -> SrcSpan -> Int -> [NameAndTypeRecord] -> IO ()
-persistTHRange conn (RealSrcSpan sp) moduleId records = do
+persistTHRange :: SrcSpan -> Int -> [NameAndTypeRecord] -> PersistStageM ()
+persistTHRange (RealSrcSpan sp) moduleId records = do
   let nodePos = realSrcSpanToNodePos sp
       fullRange = FullRange moduleId nodePos
   astNode <- if nodePos `elem` (map ntrPos records)
-    then getAstId conn fullRange
-    else insertAstId conn fullRange
-  persistTHRange' conn moduleId astNode
-persistTHRange _ _ _ _ = return () 
+    then getAstId fullRange
+    else insertAstId fullRange
+  persistTHRange' moduleId astNode
+persistTHRange _ _ _ = return () 

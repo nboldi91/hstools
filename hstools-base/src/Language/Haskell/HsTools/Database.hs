@@ -6,6 +6,9 @@ module Language.Haskell.HsTools.Database where
 
 import Control.Exception
 import Control.Monad
+import Control.Monad.IO.Class
+import Control.Monad.Catch as Catch
+import Control.Monad.IO.Unlift
 import Data.Maybe
 import Data.Int (Int64)
 import Data.Time.Clock
@@ -14,7 +17,6 @@ import Database.PostgreSQL.Simple hiding (query, query_, execute_, execute, exec
 import qualified Database.PostgreSQL.Simple as PLSQL
 import Database.PostgreSQL.Simple.SqlQQ (sql)
 
-import Language.Haskell.HsTools.Utils (DbConn(..), LogOptions(..), createLogger)
 import Language.Haskell.HsTools.SourcePosition (Range(..), startLine, startCol, endLine, endCol)
 
 data LoadingState = NotLoaded | SourceSaved | NamesLoaded | TypesLoaded
@@ -43,8 +45,8 @@ isSignatureDef DefSignature = True
 isSignatureDef DefClassOpSignature = True
 isSignatureDef _ = False
 
-getCompiledTime :: DbConn -> FilePath -> IO (Maybe UTCTime)
-getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn
+getCompiledTime :: DBMonad m => FilePath -> m (Maybe UTCTime)
+getCompiledTime filePath = fmap (fmap head . listToMaybe) $ query
   [sql|
     SELECT compiledTime
     FROM modules
@@ -52,9 +54,9 @@ getCompiledTime conn filePath = fmap (fmap head . listToMaybe) $ query conn
   |]
   (Only filePath)
 
-getModuleIdLoadingState :: DbConn -> FilePath -> IO (Maybe (Int, LoadingState))
-getModuleIdLoadingState conn filePath = do
-  res <- query conn
+getModuleIdLoadingState :: DBMonad m => FilePath -> m (Maybe (Int, LoadingState))
+getModuleIdLoadingState filePath = do
+  res <- query
     [sql| 
       SELECT moduleId, loadingState
       FROM modules
@@ -66,9 +68,9 @@ getModuleIdLoadingState conn filePath = do
     [] -> Nothing
     mods -> error $ "getModuleIdLoadingState: filePath should be unique, " ++ show filePath ++ ": " ++ show mods
 
-updateLoadingState :: DbConn -> Int -> LoadingState -> IO ()
-updateLoadingState conn moduleId newLoadingState =
-  void $ execute conn
+updateLoadingState :: DBMonad m => Int -> LoadingState -> m ()
+updateLoadingState moduleId newLoadingState =
+  void $ execute
     [sql|
       UPDATE modules
       SET loadingState = ?
@@ -76,9 +78,9 @@ updateLoadingState conn moduleId newLoadingState =
     |]
     (fromEnum newLoadingState, moduleId)
 
-updateFileDiffs :: DbConn -> FilePath -> UTCTime -> Maybe String -> IO ()
-updateFileDiffs conn filePath modifiedTime serializedDiff =
-  void $ execute conn
+updateFileDiffs :: DBMonad m => FilePath -> UTCTime -> Maybe String -> m ()
+updateFileDiffs filePath modifiedTime serializedDiff =
+  void $ execute
     [sql|
       UPDATE modules
       SET modifiedTime = ?, modifiedFileDiffs = ?
@@ -86,16 +88,16 @@ updateFileDiffs conn filePath modifiedTime serializedDiff =
     |]
     (modifiedTime, serializedDiff, filePath)
 
-getAllModifiedFileDiffs :: DbConn -> IO [(FilePath, Maybe String, Maybe UTCTime)]
-getAllModifiedFileDiffs conn = query_ conn
+getAllModifiedFileDiffs :: DBMonad m => m [(FilePath, Maybe String, Maybe UTCTime)]
+getAllModifiedFileDiffs = query_
   [sql|
     SELECT filePath, modifiedFileDiffs, modifiedTime
     FROM modules
   |]
 
-getCompiledSource :: DbConn -> FilePath -> IO (Maybe String)
-getCompiledSource conn filePath
-  = fmap (fmap head . listToMaybe) $ query conn
+getCompiledSource :: DBMonad m => FilePath -> m (Maybe String)
+getCompiledSource filePath
+  = fmap (fmap head . listToMaybe) $ query
       [sql|
         SELECT compiledSource
         FROM modules
@@ -104,9 +106,9 @@ getCompiledSource conn filePath
       |]
       (Only filePath)
 
-getModifiedTimeAndFileDiffs :: DbConn -> FilePath -> IO (Maybe String, Maybe UTCTime)
-getModifiedTimeAndFileDiffs conn filePath =
-  fromMaybe (Nothing, Nothing) . listToMaybe <$> query conn
+getModifiedTimeAndFileDiffs :: DBMonad m => FilePath -> m (Maybe String, Maybe UTCTime)
+getModifiedTimeAndFileDiffs filePath =
+  fromMaybe (Nothing, Nothing) . listToMaybe <$> query
     [sql|
       SELECT modifiedFileDiffs, modifiedTime
       FROM modules
@@ -114,9 +116,9 @@ getModifiedTimeAndFileDiffs conn filePath =
     |]
     (Only filePath)
 
-getModifiedFileDiffs :: DbConn -> FilePath -> IO (Maybe String)
-getModifiedFileDiffs conn filePath
-  = fmap (fmap head . listToMaybe) $ query conn
+getModifiedFileDiffs :: DBMonad m => FilePath -> m (Maybe String)
+getModifiedFileDiffs filePath
+  = fmap (fmap head . listToMaybe) $ query
       [sql|
         SELECT modifiedFileDiffs
         FROM modules
@@ -125,9 +127,9 @@ getModifiedFileDiffs conn filePath
       |]
       (Only filePath)
 
-insertModule :: DbConn -> FilePath -> UTCTime -> String -> String -> String -> IO Int
-insertModule conn fullPath roundedModificationTime moduleName unitId content
-  = head . head <$> query conn 
+insertModule :: DBMonad m => FilePath -> UTCTime -> String -> String -> String -> m Int
+insertModule fullPath roundedModificationTime moduleName unitId content
+  = head . head <$> query 
       [sql|
         INSERT INTO modules (filePath, compiledTime, moduleName, unitId, loadingState, compiledSource, modifiedTime, modifiedFileDiffs)
         VALUES (?, ?, ?, ?, 0, ?, null, null)
@@ -135,9 +137,9 @@ insertModule conn fullPath roundedModificationTime moduleName unitId content
       |]
       (fullPath, roundedModificationTime, moduleName, unitId, content)
 
-getAstNodes :: DbConn -> Int -> IO [(Int, Int, Int, Int, Int)]
-getAstNodes conn moduleId =
-  query conn
+getAstNodes :: DBMonad m => Int -> m [(Int, Int, Int, Int, Int)]
+getAstNodes moduleId =
+  query
     [sql|
       SELECT startRow, startColumn, endRow, endColumn, astId
       FROM ast
@@ -145,9 +147,9 @@ getAstNodes conn moduleId =
     |]
     (Only moduleId)
 
-getAllNames :: DbConn -> IO [(Int, Int, FullName, Maybe String, Bool)]
-getAllNames conn = 
-  map convertName <$> query_ conn
+getAllNames :: DBMonad m => m [(Int, Int, FullName, Maybe String, Bool)]
+getAllNames = 
+  map convertName <$> query_
     [sql|
       SELECT startRow, startColumn, name, localName, namespace, type, isDefined
       FROM ast AS n
@@ -163,8 +165,8 @@ getAllNames conn =
     convertName (startRow, startColumn, name, localName, namespace, typ, isDefined) =
       (startRow, startColumn, FullName name localName (fmap toEnum namespace), typ, isDefined)
 
-persistAst :: DbConn -> [FullRange a] -> IO [Int]
-persistAst conn asts = fmap head <$> returning conn
+persistAst :: DBMonad m => [FullRange a] -> m [Int]
+persistAst asts = fmap head <$> returning
   [sql|
     INSERT INTO ast (module, startRow, startColumn, endRow, endColumn)
     VALUES (?, ?, ?, ?, ?)
@@ -174,8 +176,8 @@ persistAst conn asts = fmap head <$> returning conn
   where
     convert (FullRange mod rng) = (mod, startLine rng, startCol rng, endLine rng, endCol rng)
 
-persistDefinitions :: DbConn -> [(Int, Int, DefinitionKind)] -> IO [Int]
-persistDefinitions conn definitions = fmap head <$> returning conn
+persistDefinitions :: DBMonad m => [(Int, Int, DefinitionKind)] -> m [Int]
+persistDefinitions definitions = fmap head <$> returning
   [sql|
     INSERT INTO definitions (module, astNode, definitionKind)
     VALUES (?, ?, ?)
@@ -183,8 +185,8 @@ persistDefinitions conn definitions = fmap head <$> returning conn
   |]
   (map (\(a,b,c) -> (a,b, fromEnum c)) definitions)
 
-persistName :: DbConn -> [(Int, Int, FullName, Bool, Maybe (Range a))] -> IO ()
-persistName conn names = void $ executeMany conn
+persistName :: DBMonad m => [(Int, Int, FullName, Bool, Maybe (Range a))] -> m ()
+persistName names = void $ executeMany
   [sql|
     INSERT INTO names (module, astNode, name, localName, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -194,8 +196,8 @@ persistName conn names = void $ executeMany conn
     convertRecord (mod, ast, FullName name localName namespace, isDefined, rn) =
       (mod, ast, name, localName, fmap fromEnum namespace, isDefined, fmap startLine rn, fmap startCol rn, fmap endLine rn, fmap endCol rn)
 
-persistTypes :: DbConn -> [(FullName, String)] -> IO ()
-persistTypes conn types = void $ executeMany conn
+persistTypes :: DBMonad m => [(FullName, String)] -> m ()
+persistTypes types = void $ executeMany
   [sql|
     INSERT INTO types (typedName, typedLocalName, typedNamespace, type)
     VALUES (?, ?, ?, ?)
@@ -205,24 +207,24 @@ persistTypes conn types = void $ executeMany conn
     convertType (FullName name localName namespace, typ) =
       (name, localName, fmap fromEnum namespace, typ)
 
-persistTHRange' :: DbConn -> Int -> Int -> IO ()
-persistTHRange' conn mod astNode = void $ execute conn
+persistTHRange' :: DBMonad m => Int -> Int -> m ()
+persistTHRange' mod astNode = void $ execute
   [sql|
     INSERT INTO thRanges (module, astNode)
     VALUES (?, ?)
   |]
   (mod, astNode)
 
-persistComments :: DbConn -> [(Int, Int, String)] -> IO ()
-persistComments conn comments = void $ executeMany conn
+persistComments :: DBMonad m => [(Int, Int, String)] -> m ()
+persistComments comments = void $ executeMany
   [sql|
     INSERT INTO comments (module, targetDefinition, commentText)
     VALUES (?, ?, ?)
   |]
   comments
 
-getAllComments :: DbConn -> IO [(Int, Int, String)]
-getAllComments conn = query_ conn
+getAllComments :: DBMonad m => m [(Int, Int, String)]
+getAllComments = query_
   [sql|
     SELECT startRow, startColumn, commentText
     FROM ast a
@@ -231,23 +233,23 @@ getAllComments conn = query_ conn
     ORDER BY startRow, startColumn
   |]
 
-persistMain :: DbConn -> Int -> String -> IO ()
-persistMain conn mod nm = void $ execute conn
+persistMain :: DBMonad m => Int -> String -> m ()
+persistMain mod nm = void $ execute
   [sql|
     INSERT INTO mains (module, name)
     VALUES (?, ?)
   |]
   (mod, nm)
 
-getAllMains :: DbConn -> IO [[String]] -- not sure why this is list of strings
-getAllMains conn = query_ conn
+getAllMains :: DBMonad m => m [[String]] -- not sure why this is list of strings
+getAllMains = query_
   [sql|
     SELECT name
     FROM mains
   |]
 
-getAllDefinitions :: DbConn -> IO [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
-getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ conn 
+getAllDefinitions :: DBMonad m => m [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
+getAllDefinitions = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ 
   [sql| 
     SELECT definitionKind, name, startRow, startColumn, endRow, endColumn
     FROM definitions d
@@ -261,8 +263,8 @@ getAllDefinitions conn = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query
     ORDER BY startRow, startColumn
   |]
 
-getTHRanges :: DbConn -> Int -> IO [(Int, Int, Int, Int)]
-getTHRanges conn moduleId = query conn 
+getTHRanges :: DBMonad m => Int -> m [(Int, Int, Int, Int)]
+getTHRanges moduleId = query 
   [sql|
     SELECT startRow, startColumn, endRow, endColumn
     FROM thRanges t
@@ -272,8 +274,8 @@ getTHRanges conn moduleId = query conn
   |]
   (Only moduleId)
 
-getAstId :: DbConn -> FullRange a -> IO Int
-getAstId conn (FullRange moduleId rn) = head . head <$> query conn 
+getAstId :: DBMonad m => FullRange a -> m Int
+getAstId (FullRange moduleId rn) = head . head <$> query 
   [sql|
     SELECT astId
     FROM ast
@@ -285,8 +287,8 @@ getAstId conn (FullRange moduleId rn) = head . head <$> query conn
   |]
   (moduleId, startLine rn, startCol rn, endLine rn, endCol rn)
 
-insertAstId :: DbConn -> FullRange a -> IO Int
-insertAstId conn (FullRange moduleId rn) = head . head <$> returning conn 
+insertAstId :: DBMonad m => FullRange a -> m Int
+insertAstId (FullRange moduleId rn) = head . head <$> returning 
   [sql|
     INSERT INTO ast (module, startRow, startColumn, endRow, endColumn)
     VALUES (?, ?, ?, ?, ?)
@@ -294,8 +296,8 @@ insertAstId conn (FullRange moduleId rn) = head . head <$> returning conn
   |]
   [(moduleId, startLine rn, startCol rn, endLine rn, endCol rn)]
 
-getMatchingNames :: DbConn -> FilePath -> Int -> Int -> Maybe Bool -> IO [(String, Int, Int, Int, Int)]
-getMatchingNames conn file row col onlyDefinitions = query conn queryWithIsDefined (file, row, row, col, col)
+getMatchingNames :: DBMonad m => FilePath -> Int -> Int -> Maybe Bool -> m [(String, Int, Int, Int, Int)]
+getMatchingNames file row col onlyDefinitions = query queryWithIsDefined (file, row, row, col, col)
   where
     queryWithoutIsDefined = 
       [sql|
@@ -321,10 +323,9 @@ getMatchingNames conn file row col onlyDefinitions = query conn queryWithIsDefin
         |]
     queryWithIsDefined = queryWithoutIsDefined `mappend` (fromString $ maybe "" ((" AND dn.isDefined = " ++) . show) onlyDefinitions)
 
-getHoverInfo :: DbConn -> FilePath -> Int -> Int -> IO [(Maybe String, Bool, String, Int, Int, Int, Int, Maybe String)]
-getHoverInfo conn file row col =
+getHoverInfo :: DBMonad m => FilePath -> Int -> Int -> m [(Maybe String, Bool, String, Int, Int, Int, Int, Maybe String)]
+getHoverInfo file row col =
   query
-    conn
     [sql| 
       SELECT tn.type, nn.isDefined, nn.name, n.startRow, n.startColumn, n.endRow, n.endColumn, c.commentText
         FROM ast n
@@ -364,63 +365,63 @@ logErrorMessage conn time context message = void $ PLSQL.execute conn
   |]
   (time, context, message)
 
-getErrors :: DbConn -> IO [(String, String)]
-getErrors conn = query_ conn
+getErrors :: DBMonad m => m [(String, String)]
+getErrors = query_
   [sql|
     SELECT context, message
     FROM errorLogs
   |]
 
-listenToModuleClean :: DbConn -> IO ()
-listenToModuleClean conn = void $ execute_ conn "LISTEN module_clean"
+listenToModuleClean :: DBMonad m => m ()
+listenToModuleClean = void $ execute_ "LISTEN module_clean"
 
-cleanModuleFromDB :: DbConn -> FilePath -> IO ()
-cleanModuleFromDB conn filePath = do
-  moduleIds <- query conn 
+cleanModuleFromDB :: DBMonad m => FilePath -> m ()
+cleanModuleFromDB filePath = do
+  moduleIds <- query 
     [sql|
       SELECT moduleId
       FROM modules
       WHERE filePath = ?
     |]
     [filePath]
-  forM_ moduleIds $ \[moduleId] -> cleanRelatedData conn moduleId
+  forM_ moduleIds $ \[moduleId] -> cleanRelatedData moduleId
 
-cleanModulesFromDB :: DbConn -> FilePath -> IO ()
-cleanModulesFromDB conn filePath = do
-  moduleIds <- query conn 
+cleanModulesFromDB :: DBMonad m => FilePath -> m ()
+cleanModulesFromDB filePath = do
+  moduleIds <- query 
     [sql|
       SELECT moduleId
       FROM modules
       WHERE filePath LIKE '%' || ? || '%'
     |]
     [filePath]
-  forM_ moduleIds $ \[moduleId] -> cleanRelatedData conn moduleId
+  forM_ moduleIds $ \[moduleId] -> cleanRelatedData moduleId
 
-cleanRelatedData :: DbConn -> Int -> IO ()
-cleanRelatedData conn moduleId = void $ do
+cleanRelatedData :: DBMonad m => Int -> m ()
+cleanRelatedData moduleId = void $ do
   mapM_
-    (\table -> execute conn (fromString $ "DELETE FROM " ++ table ++ " WHERE module = ?") [moduleId])
+    (\table -> execute (fromString $ "DELETE FROM " ++ table ++ " WHERE module = ?") [moduleId])
     ["mains", "definitions", "comments", "names", "thRanges", "ast"]
-  execute conn "DELETE FROM modules WHERE moduleId = ?" [moduleId]
+  execute "DELETE FROM modules WHERE moduleId = ?" [moduleId]
   -- TODO: this could be foreign key?
   -- FIXME: condition not update for local names
-  execute_ conn "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typedLocalName = localName AND typedNamespace = namespace)"
+  execute_ "DELETE FROM types WHERE NOT EXISTS (SELECT 1 FROM names WHERE typedName = name AND typedLocalName = localName AND typedNamespace = namespace)"
 
-reinitializeTablesIfNeeded :: DbConn -> IO ()
-reinitializeTablesIfNeeded conn = do
-  res <- try $ query_ conn "SELECT versionNumber FROM version" :: IO (Either SomeException [[Int]])
+reinitializeTablesIfNeeded :: DBMonad m => m ()
+reinitializeTablesIfNeeded = do
+  res <- Catch.try @_ @SomeException $ query_ "SELECT versionNumber FROM version"
   case res of
     Right [[r]] | databaseSchemaVersion == r -> return ()
-    _ -> reinitializeTables conn
+    _ -> reinitializeTables
 
-reinitializeTables :: DbConn -> IO ()
-reinitializeTables conn = do
-  void $ execute_ conn "DROP OWNED BY SESSION_USER"
-  void $ try @SomeException $ execute_ conn "TRUNCATE version"
-  initializeTables conn
+reinitializeTables :: DBMonad m => m ()
+reinitializeTables = do
+  void $ execute_ "DROP OWNED BY SESSION_USER"
+  void $ Catch.try @_ @SomeException $ execute_ "TRUNCATE version"
+  initializeTables
 
-initializeTables :: DbConn -> IO ()
-initializeTables conn = void $ execute conn databaseSchema (Only databaseSchemaVersion)
+initializeTables :: DBMonad m => m ()
+initializeTables = void $ execute databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
 databaseSchemaVersion = 9
@@ -553,50 +554,57 @@ databaseSchema = [sql|
 
 -- An additional layer on top of database operations to trace them
 
-execute :: (ToRow q, Show q) => DbConn -> Query -> q -> IO Int64
-execute conn query input =
-  wrapLogging conn ("execute: " ++ show query ++ " with inputs " ++ show input) $
-    PLSQL.execute (dbConnConnection conn) query input
+execute :: (DBMonad m, ToRow q, Show q) => Query -> q -> m Int64
+execute query input = do
+  conn <- getConnection
+  wrapLogging ("execute: " ++ show query ++ " with inputs " ++ show input) $
+    liftIO $ PLSQL.execute conn query input
 
-execute_ :: DbConn -> Query -> IO Int64
-execute_ conn query =
-  wrapLogging conn ("execute_: " ++ show query) $
-    PLSQL.execute_ (dbConnConnection conn) query
+execute_ :: DBMonad m => Query -> m Int64
+execute_ query = do
+  conn <- getConnection
+  wrapLogging ("execute_: " ++ show query) $
+    liftIO $ PLSQL.execute_ conn query
 
-executeMany :: (ToRow q, Show q) => DbConn -> Query -> [q] -> IO Int64
-executeMany conn query input =
-  wrapLogging conn ("executeMany: " ++ show query ++ fullData) $
-    PLSQL.executeMany (dbConnConnection conn) query input
-  where
-    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
+executeMany :: (DBMonad m, ToRow q, Show q) => Query -> [q] -> m Int64
+executeMany query input = do
+  conn <- getConnection
+  logFullData <- shouldLogFullData
+  let fullData = if logFullData then " with inputs " ++ show input else ""
+  wrapLogging ("executeMany: " ++ show query ++ fullData) $
+    liftIO $ PLSQL.executeMany conn query input  
 
-query :: (ToRow q, FromRow r, Show q) => DbConn -> Query -> q -> IO [r]
-query conn query input =
-  wrapLogging conn ("query: " ++ show query ++ " with inputs " ++ show input) $
-    PLSQL.query (dbConnConnection conn) query input
+query :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> q -> m [r]
+query query input = do
+  conn <- getConnection
+  wrapLogging ("query: " ++ show query ++ " with inputs " ++ show input) $
+    liftIO $ PLSQL.query conn query input
 
-query_ :: FromRow r => DbConn -> Query -> IO [r]
-query_ conn query =
-  wrapLogging conn ("query_: " ++ show query) $
-    PLSQL.query_ (dbConnConnection conn) query
+query_ :: (DBMonad m, FromRow r) => Query -> m [r]
+query_ query = do
+  conn <- getConnection
+  wrapLogging ("query_: " ++ show query) $
+    liftIO $ PLSQL.query_ conn query
 
-returning :: (ToRow q, FromRow r, Show q) => DbConn -> Query -> [q] -> IO [r]
-returning conn query input =
-  wrapLogging conn ("returning: " ++ show query ++ fullData) $
-    PLSQL.returning (dbConnConnection conn) query input
-  where
-    fullData = if logOptionsFullData (dbConnLogOptions conn) then " with inputs " ++ show input else ""
+returning :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> [q] -> m [r]
+returning query input = do
+  conn <- getConnection
+  logFullData <- shouldLogFullData
+  let fullData = if logFullData then " with inputs " ++ show input else ""
+  wrapLogging ("returning: " ++ show query ++ fullData) $
+    liftIO $ PLSQL.returning conn query input    
 
-wrapLogging :: DbConn -> String -> IO a -> IO a
-wrapLogging conn query action = do
-    when (logOptionsQueries logOptions || logOptionsPerformance logOptions) $
-      logger $ "Executing " ++ query
-    startTime <- getCurrentTime
-    res <- action
-    endTime <- getCurrentTime
-    when (logOptionsPerformance logOptions) $
-      logger $ "Query took " ++ show (diffUTCTime endTime startTime) ++ " seconds"
-    return res
-  where
-    logger = createLogger logOptions
-    logOptions = dbConnLogOptions conn
+wrapLogging :: DBMonad m => String -> m a -> m a
+wrapLogging query action = do
+  logOperation $ "Executing " ++ query
+  startTime <- liftIO getCurrentTime
+  res <- action
+  endTime <- liftIO getCurrentTime
+  logPerformance $ "Query took " ++ show (diffUTCTime endTime startTime) ++ " seconds"
+  return res
+
+class (MonadIO m, MonadCatch m, MonadUnliftIO m) => DBMonad m where
+  getConnection :: m Connection
+  logOperation :: String -> m ()
+  logPerformance :: String -> m ()
+  shouldLogFullData :: m Bool

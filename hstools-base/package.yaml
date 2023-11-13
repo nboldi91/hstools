@@ -26,11 +26,11 @@ library:
   source-dirs: src
   exposed-modules:
     - Language.Haskell.HsTools.Database
+    - Language.Haskell.HsTools.FileLines
     - Language.Haskell.HsTools.HandleErrors
     - Language.Haskell.HsTools.SourceDiffs
-    - Language.Haskell.HsTools.Utils
     - Language.Haskell.HsTools.SourcePosition
-    - Language.Haskell.HsTools.FileLines
+    - Language.Haskell.HsTools.Utils
   dependencies:
     - bytestring
     - containers
@@ -38,9 +38,11 @@ library:
     - directory
     - exceptions
     - filepath
+    - mtl
     - postgresql-simple
     - split
     - time
+    - unliftio-core
   ghc-options:
     - -W
     - -Werror
@@ -52,7 +54,7 @@ tests:
     ghc-options:
     - -threaded
     dependencies:
-    - hstools-base
     - containers
-    - HUnit
+    - hstools-base
     - HTF
+    - HUnit

@@ -1,4 +1,6 @@
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Language.Haskell.HsTools.Plugin.Monad where
 
@@ -9,11 +11,15 @@ import Data.Maybe
 import SrcLoc
 
 import Language.Haskell.HsTools.Plugin.Types
-import Language.Haskell.HsTools.Utils (DbConn)
+import Language.Haskell.HsTools.Utils
 import Language.Haskell.HsTools.Database
 import Language.Haskell.HsTools.SourcePosition
 
 type StoreM r = ReaderT (StoreContext r) (WriterT [r] IO)
+
+type PersistStageM = ReaderT DbConn IO
+
+type StoreStageM = ReaderT StoreParams IO
 
 data StoreContext r = StoreContext
   { scModuleName :: String
@@ -68,9 +74,10 @@ currentPos st = do
     Just np -> st np
     Nothing -> return ()
 
-defaultStoreContext :: DbConn -> Int -> String -> Maybe SrcSpan -> IO (StoreContext r)
-defaultStoreContext conn moduleId moduleName modSpan = do
-  thSpans <- getTHRanges conn moduleId
+defaultStoreContext :: Maybe SrcSpan -> StoreStageM (StoreContext r)
+defaultStoreContext modSpan = do
+  (moduleName, moduleId) <- asks spModule
+  thSpans <- withReaderT storeParamsDbConn $ getTHRanges moduleId
   return $ StoreContext
     { scModuleName = moduleName
     , scSpan = noSrcSpan
@@ -80,3 +87,13 @@ defaultStoreContext conn moduleId moduleName modSpan = do
     , scLocalUnderLoc = id
     , scInsideDefinition = False
     }
+
+instance DBMonad PersistStageM where
+  getConnection = asks dbConnConnection
+  logOperation s = do
+    isLogging <- asks (\c -> logOptionsQueries (dbConnLogOptions c) || logOptionsPerformance (dbConnLogOptions c))
+    when isLogging $ liftIO $ putStrLn s
+  logPerformance s = do
+    isLogging <- asks (logOptionsPerformance . dbConnLogOptions)
+    when isLogging $ liftIO $ putStrLn s
+  shouldLogFullData = asks (logOptionsFullData . dbConnLogOptions)

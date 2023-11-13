@@ -1,7 +1,8 @@
 module Language.Haskell.HsTools.Utils where
 
-import Control.Exception
 import Control.Monad
+import Control.Monad.Catch
+import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as BS
 import Data.String
 import Data.Time.Clock
@@ -15,7 +16,7 @@ data LogOptions = LogOptions
   , logOptionsQueries :: Bool
   , logOptionsPerformance :: Bool
   , logOptionsFullData :: Bool
-  , logOptionsOutputFile :: Maybe FilePath
+  , logOptionsOutputFile :: Maybe FilePath -- TODO: remove
   }
   deriving (Eq, Ord, Show, Read)
 
@@ -32,13 +33,6 @@ data DbConn = DbConn
   { dbConnLogOptions :: LogOptions
   , dbConnConnection :: Connection
   }
-
--- | Create a logger function from log options
-createLogger :: LogOptions -> (String -> IO ())
-createLogger _logOptions = const (return ())
-  -- (case logOptionsOutputFile logOptions of
-  --   Just logFile -> appendFile logFile
-  --   Nothing -> putStrLn) . (++ "\n")
 
 readFileContent :: FilePath -> IO (Maybe String)
 readFileContent filePath = do
@@ -61,8 +55,8 @@ roundUTCTime (UTCTime day time) = UTCTime day (picosecondsToDiffTime $ round $ d
 withTestFile :: FilePath -> String -> IO a -> IO a
 withTestFile fileName content action = (writeFileSafe fileName content >> action) `finally` removeFile fileName
 
-withTestFileLines :: FilePath -> [String] -> IO a -> IO a
-withTestFileLines fileName content action = (writeFileSafe fileName (concatMap (++ "\n") content) >> action) `finally` removeFile fileName
+withTestFileLines :: (MonadIO m, MonadMask m) => FilePath -> [String] -> m a -> m a
+withTestFileLines fileName content action = (liftIO (writeFileSafe fileName (concatMap (++ "\n") content)) >> action) `finally` liftIO (removeFile fileName)
 
 writeFileSafe :: FilePath -> String -> IO ()
 writeFileSafe filePath content = do
@@ -77,5 +71,13 @@ withTestRepo baseConnString dbName test = do
     createAndRun conn = void $ do
       execute_ conn (fromString $ "CREATE DATABASE " ++ dbName) 
       testConn <- connectPostgreSQL (BS.pack $ baseConnString ++ "/" ++ dbName)
-      test (DbConn defaultLogOptions testConn)
+      test (DbConn testLogOptions testConn)
       close testConn
+
+testLogOptions = LogOptions
+  { logOptionsHighLevel = True
+  , logOptionsQueries = True
+  , logOptionsPerformance = True
+  , logOptionsFullData = True
+  , logOptionsOutputFile = Nothing
+  }

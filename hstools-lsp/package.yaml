@@ -25,29 +25,29 @@ dependencies:
 library:
   source-dirs: src
   exposed-modules:
+    - Language.Haskell.HsTools.LspServer.FileRecords
     - Language.Haskell.HsTools.LspServer.LspServer
+    - Language.Haskell.HsTools.LspServer.Monad
+    - Language.Haskell.HsTools.LspServer.Notifications
     - Language.Haskell.HsTools.LspServer.State
     - Language.Haskell.HsTools.LspServer.Utils
-    - Language.Haskell.HsTools.LspServer.FileRecords
-    - Language.Haskell.HsTools.LspServer.Notifications
-    - Language.Haskell.HsTools.LspServer.Monad
   dependencies:
+    - aeson
+    - bytestring
+    - co-log-core
     - containers
+    - exceptions
     - hstools-base
+    - lens
     - lsp >= 1.5
     - lsp-types >= 1.5
-    - text
-    - lens
-    - postgresql-simple
-    - bytestring
-    - aeson
-    - vector
     - mtl
-    - time
-    - co-log-core
+    - postgresql-simple
     - prettyprinter
-    - exceptions
+    - text
+    - time
     - unliftio-core
+    - vector
   ghc-options:
     - -W
     - -Werror
@@ -61,8 +61,8 @@ executables:
     - -rtsopts
     - -with-rtsopts=-N
     dependencies:
-    - hstools-lsp
     - hstools-base
+    - hstools-lsp
 
 tests:
   hstools-lsp-tests:
@@ -71,21 +71,23 @@ tests:
     ghc-options:
     - -threaded
     dependencies:
-    - hstools-lsp
-    - hstools-base
-    - base
-    - containers
-    - HUnit
-    - HTF
-    - lsp-test
-    - lsp-types
-    - lsp
-    - text
-    - process
-    - postgresql-simple
     - aeson
+    - base
     - bytestring
-    - time
+    - containers
     - directory
     - filepath
+    - hstools-base
+    - hstools-lsp
+    - HTF
+    - HUnit
+    - lsp
+    - lsp-test
+    - lsp-types
+    - mtl
+    - parser-combinators
+    - postgresql-simple
+    - process
+    - text
+    - time
 

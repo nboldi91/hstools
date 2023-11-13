@@ -55,6 +55,9 @@ data StoreParams = StoreParams
 storeParamsDbConn :: StoreParams -> DbConn
 storeParamsDbConn sp = DbConn (spLogOptions sp) (spConnection sp)
 
+dbConnToStoreParams :: (String, Int) -> DbConn -> StoreParams
+dbConnToStoreParams spModule (DbConn logOptions conn) = StoreParams logOptions conn spModule
+
 containsNP :: Range NodePos -> Range NodePos -> Bool
 Range (SP sr1 sc1) (SP er1 ec1) `containsNP` Range (SP sr2 sc2) (SP er2 ec2)
   = (sr1 < sr2 || (sr1 == sr2 && sc1 <= sc2)) && (er1 > er2 || (er1 == er2 && ec1 >= ec2))

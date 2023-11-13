@@ -18,6 +18,7 @@ loadConfig config (A.Object (A.lookup "hstools" -> (Just (A.Object assoc))))
   = Right $ config 
   { cfPostgresqlConnectionString = fromMaybe (cfPostgresqlConnectionString config) $
       T.unpack <$> (fromString =<< A.lookup "postgresqlConnectionString" assoc)
+  , cfIsThreaded = fromMaybe (cfIsThreaded config) $ (fromBool =<< A.lookup "isThreaded" assoc)
   , cfLogOptions =
     LogOptions
       (fromMaybe (logOptionsHighLevel $ cfLogOptions config) $ fromBool =<< lookupLogOption "highLevel")
@@ -49,6 +50,7 @@ hsToolsDefaultConfig = do
     , cfOperation = Nothing
     , cfFileRecords = fileRecords
     , cfLogOptions = defaultLogOptions
+    , cfIsThreaded = True
     }
 
 data Config = Config
@@ -57,4 +59,5 @@ data Config = Config
   , cfOperation :: Maybe String
   , cfFileRecords :: FileRecords
   , cfLogOptions :: LogOptions
+  , cfIsThreaded :: Bool
   }
