@@ -16,6 +16,7 @@ import Language.LSP.Types as LSP
 import Language.LSP.Logging as LSP
 import Control.Monad
 import Control.Monad.IO.Class
+import Control.Monad.IO.Unlift
 import Control.Monad.Reader
 import Control.Lens (_1, (^.))
 import qualified Data.Text as T
@@ -23,6 +24,7 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Time.Clock
 import Database.PostgreSQL.Simple (connectPostgreSQL, close)
+import qualified Database.PostgreSQL.Simple.Notification as SQL
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Vector as V
@@ -35,7 +37,6 @@ import Prettyprinter
 import Language.Haskell.HsTools.LspServer.State
 import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.LspServer.Monad
-import Language.Haskell.HsTools.LspServer.Notifications
 import Language.Haskell.HsTools.LspServer.Utils
 import Language.Haskell.HsTools.SourceDiffs
 import Language.Haskell.HsTools.SourcePosition as SP
@@ -184,7 +185,7 @@ handlers = mconcat
     handlerCtx "STextDocumentDidChange" $
       ensureFileLocation uri $ \filePath -> do
         let goodChanges = catMaybes $ map textDocChangeToSD changes
-        liftLSP LSP.getConfig >>= \cf -> liftIO $ updateSavedFileRecords filePath goodChanges (cfFileRecords cf)
+        liftLSP LSP.getConfig >>= liftIO . updateSavedFileRecords filePath goodChanges . cfFileRecords
         updateFileStatesFor filePath
 
   , notificationHandler STextDocumentDidSave $ newNotificationThread $ \(DidSaveTextDocumentParams (TextDocumentIdentifier uri) _reason) -> 
@@ -194,22 +195,19 @@ handlers = mconcat
         fileDiffs <- liftIO $ readMVar (cfFileRecords cfg) >>= return . maybe emptyDiffs frDiffs . Map.lookup filePath
         currentTime <- liftIO getCurrentTime
         let serializedDiff = serializeSourceDiffs fileDiffs
-        void $ updateFileDiffs filePath currentTime (Just serializedDiff)
+        void $ updateFileDiffs filePath currentTime $ Just serializedDiff
   
   , notificationHandler STextDocumentDidOpen $ newNotificationThread $ \(DidOpenTextDocumentParams (TextDocumentItem uri _langId _version content)) ->
     handlerCtx "STextDocumentDidOpen" $
       ensureFileLocation uri $ \filePath ->
         liftLSP LSP.getConfig >>= \cf -> do
           diffs <- checkIfFileHaveBeenChanged filePath
-          recordFileOpened filePath content diffs (cfFileRecords cf)
+          recordFileOpened filePath content diffs $ cfFileRecords cf
   
   , notificationHandler STextDocumentDidClose $ newNotificationThread $ \(DidCloseTextDocumentParams (TextDocumentIdentifier uri)) ->
     handlerCtx "STextDocumentDidClose" $
       ensureFileLocation uri $ \filePath ->
-        liftLSP LSP.getConfig >>= \cf -> do
-          recordFileClosed filePath (cfFileRecords cf)
-          fileOpen <- liftIO $ isFileOpen filePath $ (cfFileRecords cf)
-          liftLSP $ logMessage $ "STextDocumentDidClose: " <> T.pack (show fileOpen)
+        liftLSP LSP.getConfig >>= recordFileClosed filePath . cfFileRecords
   ]
 
 handlerCtx :: String -> LspMonad () -> Lsp ()
@@ -233,7 +231,6 @@ sendFileStates [] = return ()
 sendFileStates states 
   = liftLSP $ sendNotification changeFileStatesMethod $ createChangeFileStates states
 
-
 tryToConnectToDB :: LspMonad ()
 tryToConnectToDB = do
   config <- liftLSP LSP.getConfig
@@ -244,19 +241,34 @@ tryToConnectToDB = do
       runReaderT reinitializeTablesIfNeeded $ DbConn (cfLogOptions config) conn
       liftIO $ putMVar (cfConnection config) conn
       -- put up listener for module clean
-      env <- getLspEnv
       listenToModuleClean
-      -- FIXME: should also use lifted lsp
-      void $ liftIO $ forkIO (handleNotifications conn (cfFileRecords config) (resSendMessage env))
+      runInIO <- askRunInIO
+      void $ liftIO $ forkIO $ runInIO handleNotifications
       -- check file statuses
       purgeRecordsForChangedFilesOnFailure $
         LSP.withProgress "Check file status" LSP.Cancellable $ \report -> do 
-          modifiedDiffs <- checkIfFilesHaveBeenChanged report
-          let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
-          liftIO $ putMVar (cfFileRecords config) $ Map.fromList fileRecords
+          maybeModifiedDiffs <- try (checkIfFilesHaveBeenChanged report)
+          -- putMVar guarantees that STextDocumentDidOpen will not trigger before the diff info is loaded from the database
+          liftIO $ case maybeModifiedDiffs of
+            Right modifiedDiffs -> do
+              let fileRecords = map (\(fp, diff) -> (fp, FileRecord diff)) modifiedDiffs
+              putMVar (cfFileRecords config) $ Map.fromList fileRecords
+            Left err -> do
+              putMVar (cfFileRecords config) Map.empty
+              throwM (err :: SomeException) -- purgeRecordsForChangedFilesOnFailure will handle this
           updateFileStates
+    Left (_ :: SomeException) -> return () -- error is OK, postgresqlConnectionString may not be initialized at first
 
-    Left (_ :: SomeException) -> return () -- error is OK
+-- Listens to the compile process changing the DB when the source is recompiled
+handleNotifications :: LspMonad ()
+handleNotifications = do
+  conn <- cfConnection <$> LSP.getConfig
+  SQL.Notification _pid channel fileName <- liftIO $ readMVar conn >>= SQL.getNotification
+  when (channel == "module_clean") $ do
+    fileRecords <- liftLSP $ cfFileRecords <$> LSP.getConfig
+    liftIO $ markFileRecordsClean [BS.unpack fileName] fileRecords
+    updateFileStates
+  handleNotifications
 
 checkIfFilesHaveBeenChanged :: (ProgressAmount -> LspMonad ()) -> LspMonad [(FilePath, SourceDiffs Original Modified)]
 checkIfFilesHaveBeenChanged report = do

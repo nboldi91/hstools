@@ -23,6 +23,7 @@ data FileRecord
     , frCompiledContent :: FileLines
     , frCurrentContent :: FileLines
     }
+    deriving Show
 
 -- Nothing means it is not loaded yet from database
 type FileRecords = MVar (Map.Map FilePath FileRecord)

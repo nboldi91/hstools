@@ -28,7 +28,6 @@ library:
     - Language.Haskell.HsTools.LspServer.FileRecords
     - Language.Haskell.HsTools.LspServer.LspServer
     - Language.Haskell.HsTools.LspServer.Monad
-    - Language.Haskell.HsTools.LspServer.Notifications
     - Language.Haskell.HsTools.LspServer.State
     - Language.Haskell.HsTools.LspServer.Utils
   dependencies:
