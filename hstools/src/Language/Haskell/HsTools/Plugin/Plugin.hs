@@ -29,7 +29,6 @@ import Language.Haskell.HsTools.Plugin.Monad
 import Language.Haskell.HsTools.Plugin.StoreInfo
 import Language.Haskell.HsTools.Plugin.Types
 import Language.Haskell.HsTools.Database
-import Language.Haskell.HsTools.HandleErrors
 import Language.Haskell.HsTools.Utils
 
 plugin :: Plugin
@@ -89,10 +88,9 @@ parsedAction :: PluginOptions -> (ModSummary, HsParsedModule) -> Hsc HsParsedMod
 parsedAction options (ms, mod) = liftIO $ do
   withDB options $ \conn -> do
     let dbConn = DbConn (poLogOptions options) conn
-    ioHandleErrors conn "parsedAction" $ do
-      runReaderT reinitializeTablesIfNeeded dbConn
-      withTransaction conn $ cleanAndRecordModule dbConn ms
-      doRunStage (poLogOptions options) conn "parse" ms (< SourceSaved) SourceSaved $ storeParsed mod
+    runReaderT reinitializeTablesIfNeeded dbConn
+    withTransaction conn $ cleanAndRecordModule dbConn ms
+    doRunStage (poLogOptions options) conn "parse" ms (< SourceSaved) SourceSaved $ storeParsed mod
   return mod
 
 
@@ -131,8 +129,7 @@ doRunStage logOptions conn caption ms condition newStage action = do
   case ml_hs_file $ ms_location ms of
     Just filePath -> do
       filePath <- canonicalizePath filePath
-      ioHandleErrors conn ("plugin: " ++ caption) $
-        logStageTime caption modName logOptions $
+      logStageTime caption modName logOptions $
         withTransaction conn $ do
           moduleIdAndState <- runReaderT (getModuleIdLoadingState filePath) dbConn
           case moduleIdAndState of

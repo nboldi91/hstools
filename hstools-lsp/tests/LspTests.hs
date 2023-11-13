@@ -69,8 +69,7 @@ serverConfig = A.Object (A.singleton "hstools" $ A.Object $ A.fromList
   ])
 
 useTestRepo :: (ReaderT DbConn IO ()) -> IO ()
-useTestRepo test = withTestRepo connectionStringWithoutDB connectionDBName (\conn -> runReaderT test conn `finally` runReaderT printErrors conn)
-  where printErrors = getErrors >>= liftIO . mapM_ print
+useTestRepo test = withTestRepo connectionStringWithoutDB connectionDBName (runReaderT test)
 
 test_simpleGotoDefinition :: Assertion
 test_simpleGotoDefinition = useTestRepo $ do

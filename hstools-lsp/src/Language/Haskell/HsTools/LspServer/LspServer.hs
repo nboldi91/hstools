@@ -85,7 +85,7 @@ handlers = mconcat
       responder $ Right Empty
       
   , requestHandler STextDocumentDefinition $ newRequestThread $ \(DefinitionParams (TextDocumentIdentifier uri) pos _ _) responder ->
-    handlerCtx "STextDocumentDefinition" $ \_conn -> do
+    handlerCtx "STextDocumentDefinition" $ do
       ensureFileLocationRequest uri responder $ \file -> do
         rewrites <- getRewrites file
         case newToOriginalPos rewrites (posToSP pos) of
@@ -96,7 +96,7 @@ handlers = mconcat
           Left _ -> liftLSP $ responder $ Right $ InR $ InL $ LSP.List [] -- the source position was not in the compiled source code
 
   , requestHandler STextDocumentReferences $ newRequestThread $ \(ReferenceParams (TextDocumentIdentifier uri) pos _ _ (ReferenceContext includeDefinition)) responder ->
-    handlerCtx "STextDocumentReferences" $ \_conn -> do
+    handlerCtx "STextDocumentReferences" $ do
       ensureFileLocationRequest uri responder $ \file -> do
         rewrites <- getRewrites file
         case newToOriginalPos rewrites (posToSP pos) of
@@ -107,7 +107,7 @@ handlers = mconcat
           Left _ -> liftLSP $ responder $ Right $ LSP.List [] -- the source position was not in the compiled source code
 
   , requestHandler STextDocumentHover $ newRequestThread $ \(HoverParams (TextDocumentIdentifier uri) pos _workDone) responder ->
-    handlerCtx "STextDocumentHover" $ \_conn -> do
+    handlerCtx "STextDocumentHover" $ do
       ensureFileLocationRequest uri responder $ \file -> do
         rewrites <- getRewrites file
         case newToOriginalPos rewrites (posToSP pos) of
@@ -130,23 +130,22 @@ handlers = mconcat
 
   -- TODO: cancelling the request that has been started
   , notificationHandler SCancelRequest $ newNotificationThread $ const $ return ()
-  -- , notificationHandler SCancelRequest $ \message -> handlerCtx "CancelRequest" $ \_conn -> do
+  -- , notificationHandler SCancelRequest $ \message -> handlerCtx "CancelRequest" $ do
   --     let NotificationMessage _ _ (CancelParams (flattenId -> _token)) = message
   --     return ()
 
   -- already handled by LSP's withProgress
   , notificationHandler SWindowWorkDoneProgressCancel $ const $ return ()
 
-  , notificationHandler (SCustomMethod "TestNotification") $ newNotificationThread $ \_args -> handlerCtx "TestNotification" $ \_conn -> do
+  , notificationHandler (SCustomMethod "TestNotification") $ newNotificationThread $ \_args -> handlerCtx "TestNotification" $ do
       liftIO $ forM_ [1..10] $ const $ threadDelay 1000000
       sendMessage "TestNotification finished"
 
-  , requestHandler (SCustomMethod "TestRequest") $ newRequestThread $ \_args responder -> handlerCtx "TestRequest" $ \_conn -> do
+  , requestHandler (SCustomMethod "TestRequest") $ newRequestThread $ \_args responder -> handlerCtx "TestRequest" $ do
       liftIO $ forM_ [1..10] $ const $ threadDelay 1000000
       liftLSP $ responder $ Right "Test request response"
 
-  , notificationHandler (SCustomMethod "CleanDB") $ \message -> handlerCtx "CleanDB" $ \_conn -> do
-      let NotificationMessage _ _ args = message
+  , notificationHandler (SCustomMethod "CleanDB") $ newNotificationThread $ \args -> handlerCtx "CleanDB" $ do
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
           reinitializeTables
@@ -157,7 +156,7 @@ handlers = mconcat
       updateFileStates
 
   , notificationHandler SWorkspaceDidChangeWatchedFiles $ newNotificationThread $ \(DidChangeWatchedFilesParams (LSP.List fileChanges)) ->
-    handlerCtx "FileChange" $ \_conn -> do
+    handlerCtx "FileChange" $ do
       let numFiles = fromIntegral $ Prelude.length fileChanges
       purgeRecordsForChangedFilesOnFailure $
         LSP.withProgress "Synchronize database with file changes" LSP.Cancellable $ \report ->
@@ -182,14 +181,14 @@ handlers = mconcat
                 (Just $ getUri uri <> " (" <> T.pack (show (i :: Int)) <> "/" <> T.pack (show (numFiles :: Int)) <> ")")
   
   , notificationHandler STextDocumentDidChange $ newNotificationThread $ \(DidChangeTextDocumentParams (VersionedTextDocumentIdentifier uri _version) (LSP.List changes)) ->
-    handlerCtx "STextDocumentDidChange" $ \_conn ->
+    handlerCtx "STextDocumentDidChange" $
       ensureFileLocation uri $ \filePath -> do
         let goodChanges = catMaybes $ map textDocChangeToSD changes
         liftLSP LSP.getConfig >>= \cf -> liftIO $ updateSavedFileRecords filePath goodChanges (cfFileRecords cf)
         updateFileStatesFor filePath
 
   , notificationHandler STextDocumentDidSave $ newNotificationThread $ \(DidSaveTextDocumentParams (TextDocumentIdentifier uri) _reason) -> 
-    handlerCtx "STextDocumentDidSave" $ \_conn ->
+    handlerCtx "STextDocumentDidSave" $
       ensureFileLocation uri $ \filePath -> do
         cfg <- LSP.getConfig
         fileDiffs <- liftIO $ readMVar (cfFileRecords cfg) >>= return . maybe emptyDiffs frDiffs . Map.lookup filePath
@@ -198,14 +197,14 @@ handlers = mconcat
         void $ updateFileDiffs filePath currentTime (Just serializedDiff)
   
   , notificationHandler STextDocumentDidOpen $ newNotificationThread $ \(DidOpenTextDocumentParams (TextDocumentItem uri _langId _version content)) ->
-    handlerCtx "STextDocumentDidOpen" $ \_conn ->
+    handlerCtx "STextDocumentDidOpen" $
       ensureFileLocation uri $ \filePath ->
         liftLSP LSP.getConfig >>= \cf -> do
           diffs <- checkIfFileHaveBeenChanged filePath
           recordFileOpened filePath content diffs (cfFileRecords cf)
   
   , notificationHandler STextDocumentDidClose $ newNotificationThread $ \(DidCloseTextDocumentParams (TextDocumentIdentifier uri)) ->
-    handlerCtx "STextDocumentDidClose" $ \_conn ->
+    handlerCtx "STextDocumentDidClose" $
       ensureFileLocation uri $ \filePath ->
         liftLSP LSP.getConfig >>= \cf -> do
           recordFileClosed filePath (cfFileRecords cf)
@@ -213,12 +212,8 @@ handlers = mconcat
           liftLSP $ logMessage $ "STextDocumentDidClose: " <> T.pack (show fileOpen)
   ]
 
-handlerCtx :: String -> (DbConn -> LspMonad ()) -> Lsp ()
-handlerCtx ctx action = 
-  runInContext ctx $
-    withConnection $ \conn ->
-      handleErrorsCtx (dbConnConnection conn) $
-        action conn
+handlerCtx :: String -> LspMonad () -> Lsp ()
+handlerCtx ctx action = runInContext ctx $ handleErrorsCtx $ action
 
 updateFileStates :: LspMonad ()
 updateFileStates = do
@@ -244,7 +239,7 @@ tryToConnectToDB = do
   config <- liftLSP LSP.getConfig
   connOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
   case connOrError of
-    Right conn -> lspHandleErrors conn "tryToConnectToDB" $ do 
+    Right conn -> do
       -- set up connection
       runReaderT reinitializeTablesIfNeeded $ DbConn (cfLogOptions config) conn
       liftIO $ putMVar (cfConnection config) conn

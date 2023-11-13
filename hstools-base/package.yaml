@@ -27,7 +27,6 @@ library:
   exposed-modules:
     - Language.Haskell.HsTools.Database
     - Language.Haskell.HsTools.FileLines
-    - Language.Haskell.HsTools.HandleErrors
     - Language.Haskell.HsTools.SourceDiffs
     - Language.Haskell.HsTools.SourcePosition
     - Language.Haskell.HsTools.Utils

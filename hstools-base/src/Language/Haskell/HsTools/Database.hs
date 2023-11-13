@@ -357,21 +357,6 @@ getHoverInfo file row col =
     |]
     (file, row, row, col, col)
 
-logErrorMessage :: Connection -> UTCTime -> String -> String -> IO ()
-logErrorMessage conn time context message = void $ PLSQL.execute conn
-  [sql|
-    INSERT INTO errorLogs (time, context, message)
-    VALUES (?, ?, ?)
-  |]
-  (time, context, message)
-
-getErrors :: DBMonad m => m [(String, String)]
-getErrors = query_
-  [sql|
-    SELECT context, message
-    FROM errorLogs
-  |]
-
 listenToModuleClean :: DBMonad m => m ()
 listenToModuleClean = void $ execute_ "LISTEN module_clean"
 

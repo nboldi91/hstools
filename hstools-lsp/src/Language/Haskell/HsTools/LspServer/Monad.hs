@@ -11,7 +11,6 @@ import Control.Monad.IO.Unlift
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import Data.Time.Clock
-import Database.PostgreSQL.Simple (Connection)
 import Language.LSP.Server as LSP
 import qualified Language.LSP.Types as LSP
 
@@ -105,16 +104,11 @@ forkLsp action = do
   rio <- askRunInIO
   void $ liftIO $ forkIO $ rio action
 
-handleErrorsCtx :: Connection -> LspMonad () -> LspMonad ()
-handleErrorsCtx conn action = do
+handleErrorsCtx :: LspMonad () -> LspMonad ()
+handleErrorsCtx action = do
   operation <- asks ctOperation
-  lspHandleErrors conn operation action
-
-lspHandleErrors :: Connection -> String -> LspMonad () -> LspMonad ()
-lspHandleErrors conn ctx = flip catch $ \e -> do
-  time <- liftIO getCurrentTime
-  sendError $ T.pack $ "Error during " ++ ctx ++ ": " ++ show e 
-  liftIO $ logErrorMessage conn time ctx (show (e :: SomeException))
+  action `catch` \e ->
+    sendError (T.pack $ "Error during " ++ operation ++ ": " ++ show (e :: SomeException))
 
 instance DBMonad (LspT Config IO) where
   getConnection = cfConnection <$> LSP.getConfig >>= liftIO . readMVar

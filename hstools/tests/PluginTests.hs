@@ -27,7 +27,6 @@ import Plugins
 
 import Language.Haskell.HsTools.Utils
 import Language.Haskell.HsTools.Database
-import Language.Haskell.HsTools.HandleErrors
 
 import Language.Haskell.HsTools.Plugin ()
 
@@ -283,28 +282,30 @@ assertHasNameNoType names expected = assertBoolVerbose ("actual names: " ++ show
           l == l' && c == c' && (nr == Definition) == d && Nothing == t'
             && ndName nd == fnName n && (case nd of Local n' -> isJust (fnLocalName n); _ -> True)
 
-runGhcTestNoSuccessCheck = do
-  res <- liftIO $ defaultErrorHandler defaultFatalMessager defaultFlushOut $ do
+runGhcTestNoSuccessCheck :: ReaderT DbConn IO SuccessFlag
+runGhcTestNoSuccessCheck =
+  liftIO $ defaultErrorHandler defaultFatalMessager defaultFlushOut $
     runGhc (Just libdir) $ do
       dflags <- dynFlagsForTest
       setSessionDynFlags dflags
       target <- guessTarget testFile Nothing
       setTargets [target]
       load LoadAllTargets
-  errors <- getErrors
-  liftIO $ assertEqual [] errors
-  return res
 
+runGhcTest :: ReaderT DbConn IO ()
 runGhcTest = do
   res <- runGhcTestNoSuccessCheck
   liftIO $ assertEqual True (succeeded res)
 
+runGhcTestError :: ReaderT DbConn IO ()
 runGhcTestError = do
   res <- runGhcTestNoSuccessCheck
   liftIO $ assertEqual True (failed res)
 
+testFile :: FilePath
 testFile = "X.hs"
 
+dynFlagsForTest :: Ghc DynFlags
 dynFlagsForTest = do
   flags <- getSessionDynFlags
   return flags
@@ -317,6 +318,7 @@ dynFlagsForTest = do
     , maxErrors = Just 0
     }
 
+useTestRepo :: ReaderT DbConn IO () -> IO ()
 useTestRepo action = withTestRepo connectionStringWithoutDB connectionDBName $ runReaderT action
 
 connectionStringWithoutDB :: String
