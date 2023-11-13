@@ -16,7 +16,6 @@ data LogOptions = LogOptions
   , logOptionsQueries :: Bool
   , logOptionsPerformance :: Bool
   , logOptionsFullData :: Bool
-  , logOptionsOutputFile :: Maybe FilePath -- TODO: remove
   }
   deriving (Eq, Ord, Show, Read)
 
@@ -25,7 +24,6 @@ defaultLogOptions = LogOptions
   , logOptionsQueries = False
   , logOptionsPerformance = False
   , logOptionsFullData = False
-  , logOptionsOutputFile = Nothing
   }
 
 -- | Everything we need for running database operations
@@ -79,5 +77,4 @@ testLogOptions = LogOptions
   , logOptionsQueries = True
   , logOptionsPerformance = True
   , logOptionsFullData = True
-  , logOptionsOutputFile = Nothing
   }

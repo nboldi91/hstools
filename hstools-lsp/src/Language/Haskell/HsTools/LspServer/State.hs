@@ -25,7 +25,6 @@ loadConfig config (A.Object (A.lookup "hstools" -> (Just (A.Object assoc))))
       (fromMaybe (logOptionsQueries $ cfLogOptions config) $ fromBool =<< lookupLogOption "queries")
       (fromMaybe (logOptionsPerformance $ cfLogOptions config) $ fromBool =<< lookupLogOption "performance")
       (fromMaybe (logOptionsFullData $ cfLogOptions config) $ fromBool =<< lookupLogOption "fullData")
-      (fromMaybe (logOptionsOutputFile $ cfLogOptions config) $ fmap (emptyToNothing . T.unpack) (fromString =<< lookupLogOption "logFilePath"))
   }
   where
     lookupLogOption k =
@@ -34,8 +33,6 @@ loadConfig config (A.Object (A.lookup "hstools" -> (Just (A.Object assoc))))
         _ -> Nothing
     fromString (A.String t) = Just t
     fromString _ = Nothing
-    emptyToNothing "" = Nothing
-    emptyToNothing x = Just x
     fromBool (A.Bool t) = Just t
     fromBool _ = Nothing
 loadConfig _ v = Left $ T.pack $ "Cannot parse options: " ++ show v

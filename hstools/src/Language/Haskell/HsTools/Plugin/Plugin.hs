@@ -171,4 +171,3 @@ pluginOptions =
         <*> switch (long "log-queries" <> help "Log individual queries toward the database")
         <*> switch (long "log-performance" <> help "Log performance-related information, like execution times")
         <*> switch (long "log-data" <> help "Log the full data of the operations with each database record")
-        <*> optional ( strOption (long "log-file" <> help "Log file path") )

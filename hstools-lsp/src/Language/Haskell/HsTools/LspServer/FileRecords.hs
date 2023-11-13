@@ -2,7 +2,6 @@
 {-# LANGUAGE TupleSections #-}
 module Language.Haskell.HsTools.LspServer.FileRecords where
 
-import Control.Monad
 import Control.Concurrent.MVar
 import Control.Monad.IO.Class
 import Control.Monad.IO.Unlift
