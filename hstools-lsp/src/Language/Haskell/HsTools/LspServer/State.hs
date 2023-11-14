@@ -3,12 +3,15 @@
 
 module Language.Haskell.HsTools.LspServer.State where
 
+import Control.Concurrent (ThreadId)
 import Control.Concurrent.MVar
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
+import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Database.PostgreSQL.Simple (Connection)
+import Language.LSP.Types (SomeLspId)
 
 import Language.Haskell.HsTools.LspServer.FileRecords
 import Language.Haskell.HsTools.Utils (LogOptions(..), defaultLogOptions)
@@ -41,6 +44,7 @@ hsToolsDefaultConfig :: IO Config
 hsToolsDefaultConfig = do
   fileRecords <- newEmptyMVar
   connection <- newEmptyMVar
+  requestThreads <- newMVar Map.empty
   return $ Config
     { cfPostgresqlConnectionString = ""
     , cfConnection = connection
@@ -48,6 +52,7 @@ hsToolsDefaultConfig = do
     , cfFileRecords = fileRecords
     , cfLogOptions = defaultLogOptions
     , cfIsThreaded = True
+    , cfRequestThreads = requestThreads
     }
 
 data Config = Config
@@ -57,4 +62,5 @@ data Config = Config
   , cfFileRecords :: FileRecords
   , cfLogOptions :: LogOptions
   , cfIsThreaded :: Bool
+  , cfRequestThreads :: MVar (Map.Map SomeLspId ThreadId)
   }

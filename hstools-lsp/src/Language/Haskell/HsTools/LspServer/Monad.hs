@@ -1,6 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PolyKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Language.Haskell.HsTools.LspServer.Monad where
 
@@ -49,16 +51,35 @@ withConnection act = do
   conn <- liftIO $ readMVar $ cfConnection config 
   act $ DbConn (cfLogOptions config) conn
 
--- TODO: save the thread id to let the user cancel them
-newRequestThread :: (LSP.MessageParams m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()) -> LSP.RequestMessage m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> Lsp ()
-newRequestThread f (LSP.RequestMessage _ _id _ params) responder = do
-  isThreaded <- cfIsThreaded <$> LSP.getConfig
-  (if isThreaded then forkLsp else id) $ f params responder
+newRequestThread ::
+  LSP.RequestMessage m ->
+    (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) ->
+      (LSP.MessageParams m -> (Either LSP.ResponseError (LSP.ResponseResult m) -> Lsp ()) -> LspMonad ()) ->
+        LspMonad ()
+newRequestThread (LSP.RequestMessage _ reqId _ params) responder f = do
+  isThreaded <- liftLSP $ cfIsThreaded <$> LSP.getConfig
+  if isThreaded
+    then do
+      requestThreads <- liftLSP $ cfRequestThreads <$> LSP.getConfig
+      operation <- asks ctOperation
+      threadId <- forkLsp $
+        f params responder
+          `catch` \(_ :: RequestCancelledException) -> return () -- handle being cancelled
+          `catch` \(e :: SomeException) -> sendError (T.pack $ "Error during " ++ operation ++ ": " ++ show e)
+          `finally` liftIO (modifyMVarPure (Map.delete (LSP.SomeLspId reqId)) requestThreads) -- remove the threadId after completion/error
+      -- save the thread id to let the user cancel them
+      liftIO $ modifyMVarPure (Map.insert (LSP.SomeLspId reqId) threadId) requestThreads
+    else f params responder
 
-newNotificationThread :: (LSP.MessageParams m -> Lsp ()) -> LSP.NotificationMessage m -> Lsp ()
-newNotificationThread f (LSP.NotificationMessage _ _ params) = do
+data RequestCancelledException = RequestCancelledException
+  deriving Show
+
+instance Exception RequestCancelledException
+
+newNotificationThread :: (MonadUnliftIO m, MonadLsp Config m) => LSP.NotificationMessage meth -> (LSP.MessageParams meth -> m ()) -> m ()
+newNotificationThread (LSP.NotificationMessage _ _ params) f = do
   isThreaded <- cfIsThreaded <$> LSP.getConfig
-  (if isThreaded then forkLsp else id) $ f params
+  (if isThreaded then void . forkLsp else id) $ f params
 
 ensureFileLocationRequest :: LSP.Uri -> (Either LSP.ResponseError a -> LspM Config ()) -> (FilePath -> LspMonad ()) -> LspMonad ()
 ensureFileLocationRequest location responder action = case LSP.uriToFilePath location of
@@ -99,10 +120,10 @@ sendError = liftLSP . sendNotification LSP.SWindowShowMessage . LSP.ShowMessageP
 logMessage :: T.Text -> Lsp ()
 logMessage = sendNotification LSP.SWindowLogMessage . LSP.LogMessageParams LSP.MtLog
 
-forkLsp :: MonadUnliftIO m => m () -> m ()
+forkLsp :: MonadUnliftIO m => m () -> m ThreadId
 forkLsp action = do
   rio <- askRunInIO
-  void $ liftIO $ forkIO $ rio action
+  liftIO $ forkIO $ rio action
 
 handleErrorsCtx :: LspMonad () -> LspMonad ()
 handleErrorsCtx action = do
