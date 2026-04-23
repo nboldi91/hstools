@@ -19,20 +19,32 @@ module Language.Haskell.HsTools.Plugin.StoreInfo where
 
 import Control.Monad.Writer
 import Control.Monad.Reader
+import Data.IORef
 import Data.Maybe
 import qualified Data.Map as Map
 import qualified Data.Set as Set
 import Data.List
 
 import ApiAnnotation
+import Bag
+import CoreSyn
+import HsBinds
 import HsDecls
 import HscTypes
 import HsExpr
 import HsExtension
 import HsImpExp
+import HsTypes
+import qualified Class as GHC
+import Id
 import Name
+import OccName (occNameString)
+import Outputable
 import SrcLoc
+import TcEvidence
 import TcRnTypes
+import TcType (tcSplitSigmaTy)
+import Type (getClassPredTys_maybe)
 import UniqFM
 
 import Language.Haskell.HsTools.Plugin.Monad
@@ -41,6 +53,7 @@ import Language.Haskell.HsTools.Plugin.Storable
 import Language.Haskell.HsTools.Plugin.StorableInstances (generateFullName)
 import Language.Haskell.HsTools.Plugin.StoreComments
 import Language.Haskell.HsTools.Database
+import Language.Haskell.HsTools.SourcePosition (Range(..), SP(..))
 import Language.Haskell.HsTools.Utils (LogOptions(..))
 
 import Language.Haskell.HsTools.Plugin.Utils.DebugGhcAST ()
@@ -146,3 +159,274 @@ persistTHRange (RealSrcSpan sp) moduleId records = do
     else insertAstId fullRange
   persistTHRange' moduleId astNode
 persistTHRange _ _ _ = return () 
+
+-- | Extract and persist instance declarations from the renamed AST
+storeInstances :: HsGroup GhcRn -> StoreStageM ()
+storeInstances (HsGroup _ _ _ tyclGroups derivDecls _ _ _ _ _ _ _) = do
+  StoreParams logOptions _ (_, moduleId) <- ask
+  let instDecls = concatMap extractInstDeclsFromGroup tyclGroups
+      derivs = map extractDerivDecl derivDecls
+      derivingClauses = concatMap extractDerivingClauses tyclGroups
+      allInstances = instDecls ++ derivs ++ derivingClauses
+  when (logOptionsFullData logOptions) $ liftIO $ do
+    putStrLn "Storing instances:"
+    mapM_ print allInstances
+  withReaderT storeParamsDbConn $
+    persistInstances moduleId allInstances
+
+storeInstances (XHsGroup _) = return ()
+
+-- | Extract instance declarations from a TyClGroup
+extractInstDeclsFromGroup :: TyClGroup GhcRn -> [InstanceRecord]
+extractInstDeclsFromGroup (TyClGroup _ _ _ insts) = concatMap extractInstDecls insts
+extractInstDeclsFromGroup _ = []
+
+-- | Extract instance info from a class instance declaration
+extractInstDecls :: LInstDecl GhcRn -> [InstanceRecord]
+extractInstDecls (L loc (ClsInstD _ (ClsInstDecl _ ty _ _ _ _ _))) =
+  case extractClassAndType (hsib_body ty) of
+    Just (className, typeName, ctx) ->
+      case srcSpanToNodePos loc of
+        Just pos -> [InstanceRecord className typeName HandWrittenInstance pos ctx]
+        Nothing -> []
+    Nothing -> []
+extractInstDecls _ = []
+
+-- | Extract instance info from a standalone deriving declaration
+extractDerivDecl :: LDerivDecl GhcRn -> InstanceRecord
+extractDerivDecl (L loc (DerivDecl _ ty _ _)) =
+  let (className, typeName, ctx) = fromMaybe ("", "", []) $ extractClassAndType (hsib_body $ hswc_body ty)
+      pos = fromMaybe (Range (SP 0 0) (SP 0 0)) $ srcSpanToNodePos loc
+  in InstanceRecord className typeName StandaloneDerivedInstance pos ctx
+extractDerivDecl (L loc _) =
+  let pos = fromMaybe (Range (SP 0 0) (SP 0 0)) $ srcSpanToNodePos loc
+  in InstanceRecord "" "" StandaloneDerivedInstance pos []
+
+-- | Extract deriving clause instances from type declarations
+extractDerivingClauses :: TyClGroup GhcRn -> [InstanceRecord]
+extractDerivingClauses (TyClGroup _ tyclds _ _) = concatMap extractFromTyClDecl tyclds
+extractDerivingClauses _ = []
+
+extractFromTyClDecl :: LTyClDecl GhcRn -> [InstanceRecord]
+extractFromTyClDecl (L _ (DataDecl _ name _ _ (HsDataDefn _ _ _ _ _ _ derivs))) =
+  let typeName = showSDocUnsafe (ppr (unLoc name))
+  in concatMap (extractFromDerivClause typeName) (unLoc derivs)
+extractFromTyClDecl _ = []
+
+extractFromDerivClause :: String -> LHsDerivingClause GhcRn -> [InstanceRecord]
+extractFromDerivClause typeName (L loc (HsDerivingClause _ _ (L _ tys))) =
+  let pos = fromMaybe (Range (SP 0 0) (SP 0 0)) $ srcSpanToNodePos loc
+  in map (derivedClassToRecord typeName pos) (map hsib_body tys)
+extractFromDerivClause _ _ = []
+
+derivedClassToRecord :: String -> Range NodePos -> LHsType GhcRn -> InstanceRecord
+derivedClassToRecord typeName pos ty =
+  let className = showSDocUnsafe (ppr ty)
+  in InstanceRecord className typeName DerivedInstance pos []
+
+-- | Decompose an instance type into (className, typeName, context)
+-- e.g., for "Eq a => Ord (Wrapper a)" returns ("Ord", "Wrapper a", [("Eq", "a")])
+extractClassAndType :: LHsType GhcRn -> Maybe (String, String, [(String, String)])
+extractClassAndType (L _ (HsForAllTy _ _ body)) = extractClassAndType body
+extractClassAndType (L _ (HsQualTy _ ctx body)) =
+  case extractClassAndType body of
+    Just (cls, typ, _) -> Just (cls, typ, extractContext ctx)
+    Nothing -> Nothing
+extractClassAndType (L _ (HsAppTy _ lhs rhs)) =
+  Just (showSDocUnsafe (ppr (unLoc lhs)), showSDocUnsafe (ppr (unLoc rhs)), [])
+extractClassAndType (L _ (HsParTy _ inner)) = extractClassAndType inner
+extractClassAndType (L _ (HsTyVar _ _ name)) =
+  Just (showSDocUnsafe (ppr (unLoc name)), "", [])
+extractClassAndType _ = Nothing
+
+-- | Extract context constraints as (className, typeName) pairs
+extractContext :: LHsContext GhcRn -> [(String, String)]
+extractContext (L _ ctxTypes) = mapMaybe extractConstraint ctxTypes
+
+extractConstraint :: LHsType GhcRn -> Maybe (String, String)
+extractConstraint (L _ (HsAppTy _ cls typ)) =
+  Just (showSDocUnsafe (ppr (unLoc cls)), showSDocUnsafe (ppr (unLoc typ)))
+extractConstraint (L _ (HsParTy _ inner)) = extractConstraint inner
+extractConstraint _ = Nothing
+
+-- | Persist instance records to the database
+persistInstances :: Int -> [InstanceRecord] -> PersistStageM ()
+persistInstances moduleId instances = do
+  forM_ instances $ \(InstanceRecord cls typ kind pos ctx) -> do
+    let fullRange = FullRange moduleId pos
+    [astId] <- persistAst [fullRange]
+    instId <- persistInstance moduleId astId cls typ kind
+    when (not $ null ctx) $
+      persistInstanceDeps (map (\(rc, rt) -> (instId, rc, rt)) ctx)
+
+-- | Extract and persist instance usage evidence from the typechecked AST.
+-- In GHC 8.6, evidence for instance resolution is embedded inside
+-- tcg_binds (the typechecked HsExpr trees) rather than tcg_ev_binds.
+-- We also check tcg_ev_binds for any top-level evidence.
+storeInstanceUsages :: TcGblEnv -> StoreStageM ()
+storeInstanceUsages env = do
+  StoreParams logOptions _ (_, moduleId) <- ask
+  -- Build resolution map from tcg_ev_binds: for each evidence binding
+  -- where the RHS is a DFun, map the LHS evidence variable to the usage record
+  let evResolutionMap = Map.fromList
+        [ (eb_lhs b, rec)
+        | b <- bagToList (tcg_ev_binds env)
+        , rec <- extractUsageFromEvBind b
+        ]
+  -- Extract DFunId usages and evidence variable IDs from non-instance bindings
+  (tcBindUsages, evVarIds) <- liftIO $ extractDFunIdsAndEvVars (tcg_binds env)
+  -- Resolve evidence variables to DFun usage records
+  let resolvedUsages = mapMaybe (`Map.lookup` evResolutionMap) (Set.toList evVarIds)
+  let usages = tcBindUsages ++ resolvedUsages
+      uniqueUsages = Set.toList $ Set.fromList usages
+  when (logOptionsFullData logOptions) $ liftIO $ do
+    putStrLn "Storing instance usages:"
+    mapM_ print uniqueUsages
+  when (not $ null uniqueUsages) $
+    withReaderT storeParamsDbConn $
+      persistInstanceUsages (map (\(InstanceUsageRecord cls typ) -> (moduleId, cls, typ)) uniqueUsages)
+
+-- | Check if an Id is a class method implementation (e.g. $cshow, $c==)
+-- These are generated for instance method definitions and reference the parent DFun
+isInstanceMethodExport :: Id -> Bool
+isInstanceMethodExport v = case nameOccName (getName v) of
+  occ -> "$c" `isPrefixOf` occNameString occ
+
+-- | Extract DFunId usage records AND evidence variable IDs from non-instance bindings.
+-- Returns (dfunUsages, evVarIds) where evVarIds are evidence variables
+-- referenced by non-instance code that need to be resolved via tcg_ev_binds.
+extractDFunIdsAndEvVars :: LHsBinds GhcTc -> IO ([InstanceUsageRecord], Set.Set Id)
+extractDFunIdsAndEvVars binds = do
+  results <- mapM (extractFromBind . unLoc) (bagToList binds)
+  let (usages, vars) = unzip results
+  return (concat usages, Set.unions vars)
+  where
+    extractFromBind (AbsBinds _ _ _ exports evBinds innerBinds _)
+      | any (isDFunId . abe_poly) exports = return ([], Set.empty)
+      | any (isInstanceMethodExport . abe_poly) exports = return ([], Set.empty)
+      | otherwise = do
+        evUsages <- fmap concat $ mapM extractUsagesFromTcEvBinds evBinds
+        (innerUsages, innerVars) <- extractDFunIdsAndEvVars innerBinds
+        return (evUsages ++ innerUsages, innerVars)
+    extractFromBind (FunBind _ _ mg _ _) = extractFromMG mg
+    extractFromBind (PatBind _ _ rhs _) = extractFromGRHSs rhs
+    extractFromBind _ = return ([], Set.empty)
+    extractFromMG (MG _ (L _ matches) _) = do
+      results <- mapM (extractFromMatch . unLoc) matches
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromMG _ = return ([], Set.empty)
+    extractFromMatch (Match _ _ _ rhs) = extractFromGRHSs rhs
+    extractFromMatch _ = return ([], Set.empty)
+    extractFromGRHSs (GRHSs _ grhss _) = do
+      results <- mapM (extractFromGRHS . unLoc) grhss
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromGRHSs _ = return ([], Set.empty)
+    extractFromGRHS (GRHS _ _ body) = extractFromLExpr body
+    extractFromGRHS _ = return ([], Set.empty)
+    extractFromLExpr (L _ expr) = extractFromExpr expr
+    extractFromExpr (HsVar _ (L _ v))
+      | isDFunId v = return ([dfunToUsageRecord v], Set.empty)
+      | otherwise = return ([], Set.empty)
+    extractFromExpr (HsWrap _ wrapper inner) = do
+      let (wUsages, wVars) = extractFromWrapper wrapper
+      (iUsages, iVars) <- extractFromExpr inner
+      return (wUsages ++ iUsages, Set.union wVars iVars)
+    extractFromExpr (HsApp _ f a) = do
+      (fu, fv) <- extractFromLExpr f
+      (au, av) <- extractFromLExpr a
+      return (fu ++ au, Set.union fv av)
+    extractFromExpr (OpApp _ l op r) = do
+      (lu, lv) <- extractFromLExpr l
+      (ou, ov) <- extractFromLExpr op
+      (ru, rv) <- extractFromLExpr r
+      return (lu ++ ou ++ ru, Set.unions [lv, ov, rv])
+    extractFromExpr (NegApp _ e _) = extractFromLExpr e
+    extractFromExpr (HsPar _ e) = extractFromLExpr e
+    extractFromExpr (SectionL _ e1 e2) = do
+      (u1, v1) <- extractFromLExpr e1
+      (u2, v2) <- extractFromLExpr e2
+      return (u1 ++ u2, Set.union v1 v2)
+    extractFromExpr (SectionR _ e1 e2) = do
+      (u1, v1) <- extractFromLExpr e1
+      (u2, v2) <- extractFromLExpr e2
+      return (u1 ++ u2, Set.union v1 v2)
+    extractFromExpr (ExplicitTuple _ args _) = do
+      results <- mapM (\(L _ a) -> case a of Present _ e -> extractFromLExpr e; _ -> return ([], Set.empty)) args
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromExpr (HsCase _ scrut mg) = do
+      (su, sv) <- extractFromLExpr scrut
+      (mu, mv) <- extractFromMG mg
+      return (su ++ mu, Set.union sv mv)
+    extractFromExpr (HsIf _ _ c t f) = do
+      (cu, cv) <- extractFromLExpr c
+      (tu, tv) <- extractFromLExpr t
+      (fu, fv) <- extractFromLExpr f
+      return (cu ++ tu ++ fu, Set.unions [cv, tv, fv])
+    extractFromExpr (HsLet _ (L _ binds) body) = do
+      (bu, bv) <- extractFromLocalBinds binds
+      (eu, ev) <- extractFromLExpr body
+      return (bu ++ eu, Set.union bv ev)
+    extractFromExpr (HsDo _ _ (L _ stmts)) = do
+      results <- mapM (extractFromStmt . unLoc) stmts
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromExpr (ExplicitList _ _ exprs) = do
+      results <- mapM extractFromLExpr exprs
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromExpr (HsLam _ mg) = extractFromMG mg
+    extractFromExpr _ = return ([], Set.empty)
+    extractFromWrapper (WpEvApp (EvExpr (Var v)))
+      | isDFunId v = ([dfunToUsageRecord v], Set.empty)
+      | otherwise = ([], Set.singleton v)  -- evidence variable, collect it
+    extractFromWrapper (WpEvApp _) = ([], Set.empty)
+    extractFromWrapper (WpCompose w1 w2) =
+      let (u1, v1) = extractFromWrapper w1
+          (u2, v2) = extractFromWrapper w2
+      in (u1 ++ u2, Set.union v1 v2)
+    extractFromWrapper _ = ([], Set.empty)
+    extractFromLocalBinds (HsValBinds _ (XValBindsLR (NValBinds binds _))) = do
+      results <- mapM (extractDFunIdsAndEvVars . snd) binds
+      let (u, v) = unzip results in return (concat u, Set.unions v)
+    extractFromLocalBinds _ = return ([], Set.empty)
+    extractFromStmt (BindStmt _ _ body _ _) = extractFromLExpr body
+    extractFromStmt (BodyStmt _ body _ _) = extractFromLExpr body
+    extractFromStmt (LastStmt _ body _ _) = extractFromLExpr body
+    extractFromStmt (LetStmt _ (L _ binds)) = extractFromLocalBinds binds
+    extractFromStmt _ = return ([], Set.empty)
+
+dfunToUsageRecord :: Id -> InstanceUsageRecord
+dfunToUsageRecord v =
+  let ty = idType v
+      -- strip foralls and constraints to get to the class predicate (e.g. Show Int)
+      (_, _, classPred) = tcSplitSigmaTy ty
+      (className, typeName) = case getClassPredTys_maybe classPred of
+        Just (cls, tys) -> (showSDocUnsafe $ ppr $ className' cls, showSDocUnsafe $ ppr tys)
+        Nothing -> (showSDocUnsafe $ ppr classPred, "")
+      className' cls = GHC.className cls
+  in InstanceUsageRecord className typeName
+
+-- | Extract instance usage from a single evidence binding
+extractUsageFromEvBind :: EvBind -> [InstanceUsageRecord]
+extractUsageFromEvBind (EvBind { eb_rhs = term }) = extractUsageFromEvTerm term
+
+-- | Extract instance usage from an evidence term (GHC 8.6)
+extractUsageFromEvTerm :: EvTerm -> [InstanceUsageRecord]
+extractUsageFromEvTerm (EvExpr expr) = extractUsageFromCoreExpr expr
+extractUsageFromEvTerm _ = []
+
+-- | Extract usages from TcEvBinds (supports both pure EvBinds and mutable TcEvBinds)
+extractUsagesFromTcEvBinds :: TcEvBinds -> IO [InstanceUsageRecord]
+extractUsagesFromTcEvBinds (EvBinds bag) =
+  return $ concatMap extractUsageFromEvBind (bagToList bag)
+extractUsagesFromTcEvBinds (TcEvBinds ref) = case ref of
+  EvBindsVar { ebv_binds = bindsRef } -> do
+    bindsMap <- readIORef bindsRef
+    return $ concatMap extractUsageFromEvBind (bagToList $ evBindMapBinds bindsMap)
+  NoEvBindsVar {} -> return []
+
+-- | Extract instance usages from a Core expression
+extractUsageFromCoreExpr :: CoreExpr -> [InstanceUsageRecord]
+extractUsageFromCoreExpr (Var v)
+  | isDFunId v = [dfunToUsageRecord v]
+  | otherwise = []
+extractUsageFromCoreExpr (App f a) = extractUsageFromCoreExpr f ++ extractUsageFromCoreExpr a
+extractUsageFromCoreExpr _ = []

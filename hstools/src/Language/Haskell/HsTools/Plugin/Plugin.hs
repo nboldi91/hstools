@@ -100,12 +100,15 @@ renamedAction options (env, group) = do
   let imports = tcg_rn_imports env
   -- Renamed action can be invoked multiple times to store the results after resolving template haskell
   runStage options "rename" (<= NamesLoaded) NamesLoaded $ storeNames (exports, imports, group)
+  runStage options "instances" (<= NamesLoaded) NamesLoaded $ storeInstances group
   return (env, group)
 
 typeCheckAction :: PluginOptions -> (ModSummary, TcGblEnv) -> TcM TcGblEnv
 typeCheckAction options (ms, env) = withDB options $ \conn -> liftIO $ do
   let performStage = doRunStage (poLogOptions options) conn
-  performStage "typeCheck" ms (< TypesLoaded) TypesLoaded $ storeTypes env
+  performStage "typeCheck" ms (< TypesLoaded) TypesLoaded $ do
+    storeTypes env
+    storeInstanceUsages env
   performStage "main" ms (== TypesLoaded) TypesLoaded $ storeMain $ tcg_main env
   return env
 

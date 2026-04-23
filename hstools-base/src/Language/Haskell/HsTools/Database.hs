@@ -29,6 +29,9 @@ data DefinitionKind
   | DefParameter | DefTypeDecl | DefConstructor | DefCtorArg | DefForeignExport | DefForeignImport
   deriving (Show, Eq, Ord, Enum)
 
+data InstanceKind = HandWrittenInstance | DerivedInstance | StandaloneDerivedInstance
+  deriving (Show, Eq, Ord, Enum)
+
 data FullName = FullName
   { fnName :: String
   , fnLocalName :: Maybe String
@@ -248,6 +251,74 @@ getAllMains = query_
     FROM mains
   |]
 
+persistInstance :: DBMonad m => Int -> Int -> String -> String -> InstanceKind -> m Int
+persistInstance mod astNode className typeName kind =
+  head . head <$> query
+    [sql|
+      INSERT INTO instances (module, astNode, className, typeName, instanceKind)
+      VALUES (?, ?, ?, ?, ?)
+      RETURNING instanceId
+    |]
+    (mod, astNode, className, typeName, fromEnum kind)
+
+persistInstanceDeps :: DBMonad m => [(Int, String, String)] -> m ()
+persistInstanceDeps deps = void $ executeMany
+  [sql|
+    INSERT INTO instance_deps (instanceId, requiredClass, requiredType)
+    VALUES (?, ?, ?)
+  |]
+  deps
+
+persistInstanceUsages :: DBMonad m => [(Int, String, String)] -> m ()
+persistInstanceUsages usages = void $ executeMany
+  [sql|
+    INSERT INTO instance_usages (module, className, typeName)
+    VALUES (?, ?, ?)
+  |]
+  usages
+
+getAllInstances :: DBMonad m => m [(Int, String, String, String, InstanceKind, Int, Int, Int, Int)]
+getAllInstances =
+  map (\(iid, fp, cls, typ, kind, sr, sc, er, ec) -> (iid, fp, cls, typ, toEnum kind, sr, sc, er, ec)) <$> query_
+    [sql|
+      SELECT i.instanceId, m.filePath, i.className, i.typeName, i.instanceKind,
+             a.startRow, a.startColumn, a.endRow, a.endColumn
+      FROM instances i
+      JOIN modules m ON i.module = m.moduleId
+      JOIN ast a ON i.astNode = a.astId
+    |]
+
+getInstanceDeps :: DBMonad m => m [(Int, String, String)]
+getInstanceDeps = query_
+  [sql|
+    SELECT instanceId, requiredClass, requiredType
+    FROM instance_deps
+  |]
+
+getInstanceUsages :: DBMonad m => m [(String, String)]
+getInstanceUsages =
+  map (\(cls, typ) -> (cls, typ)) <$> query_
+    [sql|
+      SELECT DISTINCT className, typeName
+      FROM instance_usages
+    |]
+
+-- | Get instances that have no matching usage (by className)
+getUnusedInstances :: DBMonad m => m [(Int, String, String, String, InstanceKind, Int, Int, Int, Int)]
+getUnusedInstances =
+  map (\(iid, fp, cls, typ, kind, sr, sc, er, ec) -> (iid, fp, cls, typ, toEnum kind, sr, sc, er, ec)) <$> query_
+    [sql|
+      SELECT i.instanceId, m.filePath, i.className, i.typeName, i.instanceKind,
+             a.startRow, a.startColumn, a.endRow, a.endColumn
+      FROM instances i
+      JOIN modules m ON i.module = m.moduleId
+      JOIN ast a ON i.astNode = a.astId
+      WHERE NOT EXISTS (
+        SELECT 1 FROM instance_usages u
+        WHERE u.className = i.className
+      )
+    |]
+
 getAllDefinitions :: DBMonad m => m [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
 getAllDefinitions = fmap (\(k,n,a,b,c,d) -> (toEnum k,n,a,b,c,d)) <$> query_ 
   [sql| 
@@ -384,9 +455,10 @@ cleanModulesFromDB filePath = do
 
 cleanRelatedData :: DBMonad m => Int -> m ()
 cleanRelatedData moduleId = void $ do
+  execute_ (fromString $ "DELETE FROM instance_deps WHERE instanceId IN (SELECT instanceId FROM instances WHERE module = " ++ show moduleId ++ ")")
   mapM_
     (\table -> execute (fromString $ "DELETE FROM " ++ table ++ " WHERE module = ?") [moduleId])
-    ["mains", "definitions", "comments", "names", "thRanges", "ast"]
+    ["mains", "definitions", "comments", "names", "thRanges", "ast", "instances", "instance_usages"]
   execute "DELETE FROM modules WHERE moduleId = ?" [moduleId]
   -- TODO: this could be foreign key?
   -- FIXME: condition not update for local names
@@ -409,7 +481,7 @@ initializeTables :: DBMonad m => m ()
 initializeTables = void $ execute databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 9
+databaseSchemaVersion = 10
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -518,6 +590,35 @@ databaseSchema = [sql|
   CREATE INDEX ON mains USING HASH (module);
   CREATE INDEX ON mains USING HASH (name);
 
+  CREATE TABLE instances
+    ( instanceId SERIAL PRIMARY KEY
+    , module INT NOT NULL
+    , astNode INT NOT NULL
+    , className TEXT NOT NULL
+    , typeName TEXT NOT NULL
+    , instanceKind INT NOT NULL
+    );
+
+  CREATE INDEX ON instances USING HASH (module);
+  CREATE INDEX ON instances USING BTREE (className, typeName);
+
+  CREATE TABLE instance_deps
+    ( instanceId INT NOT NULL
+    , requiredClass TEXT NOT NULL
+    , requiredType TEXT NOT NULL
+    );
+
+  CREATE INDEX ON instance_deps USING HASH (instanceId);
+
+  CREATE TABLE instance_usages
+    ( module INT NOT NULL
+    , className TEXT NOT NULL
+    , typeName TEXT NOT NULL
+    );
+
+  CREATE INDEX ON instance_usages USING HASH (module);
+  CREATE INDEX ON instance_usages USING BTREE (className, typeName);
+
   CREATE OR REPLACE FUNCTION notifyModulesFunction()
     RETURNS trigger
     LANGUAGE plpgsql AS $$
@@ -540,19 +641,19 @@ databaseSchema = [sql|
 -- An additional layer on top of database operations to trace them
 
 execute :: (DBMonad m, ToRow q, Show q) => Query -> q -> m Int64
-execute query input = do
+execute query input = withConnectionLock $ do
   conn <- getConnection
   wrapLogging ("execute: " ++ show query ++ " with inputs " ++ show input) $
     liftIO $ PLSQL.execute conn query input
 
 execute_ :: DBMonad m => Query -> m Int64
-execute_ query = do
+execute_ query = withConnectionLock $ do
   conn <- getConnection
   wrapLogging ("execute_: " ++ show query) $
     liftIO $ PLSQL.execute_ conn query
 
 executeMany :: (DBMonad m, ToRow q, Show q) => Query -> [q] -> m Int64
-executeMany query input = do
+executeMany query input = withConnectionLock $ do
   conn <- getConnection
   logFullData <- shouldLogFullData
   let fullData = if logFullData then " with inputs " ++ show input else ""
@@ -560,19 +661,19 @@ executeMany query input = do
     liftIO $ PLSQL.executeMany conn query input  
 
 query :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> q -> m [r]
-query query input = do
+query query input = withConnectionLock $ do
   conn <- getConnection
   wrapLogging ("query: " ++ show query ++ " with inputs " ++ show input) $
     liftIO $ PLSQL.query conn query input
 
 query_ :: (DBMonad m, FromRow r) => Query -> m [r]
-query_ query = do
+query_ query = withConnectionLock $ do
   conn <- getConnection
   wrapLogging ("query_: " ++ show query) $
     liftIO $ PLSQL.query_ conn query
 
 returning :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> [q] -> m [r]
-returning query input = do
+returning query input = withConnectionLock $ do
   conn <- getConnection
   logFullData <- shouldLogFullData
   let fullData = if logFullData then " with inputs " ++ show input else ""
@@ -590,6 +691,8 @@ wrapLogging query action = do
 
 class (MonadIO m, MonadCatch m, MonadUnliftIO m) => DBMonad m where
   getConnection :: m Connection
+  withConnectionLock :: m a -> m a
+  withConnectionLock = id
   logOperation :: String -> m ()
   logPerformance :: String -> m ()
   shouldLogFullData :: m Bool

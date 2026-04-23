@@ -46,6 +46,19 @@ data NameAndTypeRecord = NameAndTypeRecord
   , ntrPos :: Range NodePos
   } deriving (Show, Eq, Ord)
 
+data InstanceRecord = InstanceRecord
+  { irClassName :: String
+  , irTypeName :: String
+  , irKind :: InstanceKind
+  , irPos :: Range NodePos
+  , irContext :: [(String, String)]  -- (requiredClass, requiredType)
+  } deriving (Show, Eq, Ord)
+
+data InstanceUsageRecord = InstanceUsageRecord
+  { iuClassName :: String
+  , iuTypeName :: String
+  } deriving (Show, Eq, Ord)
+
 data StoreParams = StoreParams
   { spLogOptions :: LogOptions
   , spConnection :: Connection

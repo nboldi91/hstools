@@ -133,6 +133,9 @@ handleErrorsCtx action = do
 
 instance DBMonad (LspT Config IO) where
   getConnection = cfConnection <$> LSP.getConfig >>= liftIO . readMVar
+  withConnectionLock action = do
+    lock <- cfDbLock <$> LSP.getConfig
+    withRunInIO $ \runInIO -> withMVar lock $ \() -> runInIO action
   logOperation msg = do 
     logOptions <- cfLogOptions <$> LSP.getConfig
     let isLogging = logOptionsPerformance logOptions || logOptionsQueries logOptions
@@ -144,12 +147,18 @@ instance DBMonad (LspT Config IO) where
 
 instance DBMonad LspMonad where
   getConnection = lift getConnection
+  withConnectionLock action = do
+    ctx <- ask
+    lift $ withConnectionLock $ runReaderT action ctx
   logOperation = lift . logOperation
   logPerformance = lift . logPerformance
   shouldLogFullData = lift shouldLogFullData
 
 instance DBMonad (ReaderT DbConn LspMonad) where
   getConnection = asks dbConnConnection
+  withConnectionLock action = do
+    ctx <- ask
+    lift $ withConnectionLock $ runReaderT action ctx
   logOperation msg = do 
     logOptions <- asks dbConnLogOptions
     let isLogging = logOptionsPerformance logOptions || logOptionsQueries logOptions

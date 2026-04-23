@@ -19,7 +19,8 @@ import qualified Data.Text as T
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Time.Clock
-import Database.PostgreSQL.Simple (connectPostgreSQL, close)
+import Database.PostgreSQL.Simple (Connection, connectPostgreSQL, close)
+import qualified Database.PostgreSQL.Simple as PLSQL
 import qualified Database.PostgreSQL.Simple.Notification as SQL
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
@@ -79,6 +80,10 @@ handlers = mconcat
       maybeConn <- liftIO $ tryReadMVar (cfConnection cfg)
       case maybeConn of
         Just conn -> liftIO $ close conn
+        Nothing -> return ()
+      maybeNotifyConn <- liftIO $ readMVar (cfNotifyConnection cfg)
+      case maybeNotifyConn of
+        Just notifyConn -> liftIO $ close notifyConn
         Nothing -> return ()
       liftLSP $ responder $ Right Empty
       
@@ -140,6 +145,11 @@ handlers = mconcat
   , request (SCustomMethod "TestRequest") $ \_args responder -> do
       liftIO $ forM_ [1..10] $ const $ threadDelay 1000000
       liftLSP $ responder $ Right "Test request response"
+
+  , request (SCustomMethod "FindUnusedInstances") $ \_args responder -> do
+      unusedInstances <- getUnusedInstances
+      let results = A.Array $ V.fromList $ map instanceToJSON unusedInstances
+      liftLSP $ responder $ Right results
 
   , notification (SCustomMethod "CleanDB") $ \args -> do
       case args of
@@ -237,10 +247,19 @@ tryToConnectToDB = do
       -- set up connection
       runReaderT reinitializeTablesIfNeeded $ DbConn (cfLogOptions config) conn
       liftIO $ putMVar (cfConnection config) conn
-      -- put up listener for module clean
-      listenToModuleClean
-      runInIO <- askRunInIO
-      void $ liftIO $ forkIO $ runInIO handleNotifications
+      -- open a separate connection for notification listening to avoid concurrent use of the main connection
+      notifyConnOrError <- liftIO $ try $ connectPostgreSQL (BS.pack (cfPostgresqlConnectionString config))
+      case notifyConnOrError of
+        Right notifyConn -> do
+          liftIO $ modifyMVar_ (cfNotifyConnection config) $ \_ -> return (Just notifyConn)
+          liftIO $ PLSQL.execute_ notifyConn "LISTEN module_clean"
+          runInIO <- askRunInIO
+          void $ liftIO $ forkIO $ runInIO $ handleNotifications notifyConn
+        Left (_ :: SomeException) -> do
+          -- fall back to using main connection for notifications
+          listenToModuleClean
+          runInIO <- askRunInIO
+          void $ liftIO $ forkIO $ runInIO $ handleNotifications conn
       -- check file statuses
       purgeRecordsForChangedFilesOnFailure $
         LSP.withProgress "Check file status" LSP.Cancellable $ \report -> do 
@@ -257,15 +276,14 @@ tryToConnectToDB = do
     Left (_ :: SomeException) -> return () -- error is OK, postgresqlConnectionString may not be initialized at first
 
 -- Listens to the compile process changing the DB when the source is recompiled
-handleNotifications :: LspMonad ()
-handleNotifications = do
-  conn <- cfConnection <$> LSP.getConfig
-  SQL.Notification _pid channel fileName <- liftIO $ readMVar conn >>= SQL.getNotification
+handleNotifications :: Connection -> LspMonad ()
+handleNotifications notifyConn = do
+  SQL.Notification _pid channel fileName <- liftIO $ SQL.getNotification notifyConn
   when (channel == "module_clean") $ do
     fileRecords <- liftLSP $ cfFileRecords <$> LSP.getConfig
     liftIO $ markFileRecordsClean [BS.unpack fileName] fileRecords
     updateFileStates
-  handleNotifications
+  handleNotifications notifyConn
 
 checkIfFilesHaveBeenChanged :: (ProgressAmount -> LspMonad ()) -> LspMonad [(FilePath, SourceDiffs Original Modified)]
 checkIfFilesHaveBeenChanged report = do
@@ -297,9 +315,23 @@ purgeRecordsForChangedFiles = do
     when (isJust modificationTime) $ cleanModuleFromDB $ diff ^. _1
   updateFileStates
 
+instanceToJSON :: (Int, String, String, String, InstanceKind, Int, Int, Int, Int) -> A.Value
+instanceToJSON (instId, filePath, className, typeName, kind, startLine, startCol, endLine, endCol) =
+  A.object
+    [ "instanceId" A..= instId
+    , "filePath" A..= filePath
+    , "className" A..= className
+    , "typeName" A..= typeName
+    , "instanceKind" A..= show kind
+    , "startLine" A..= startLine
+    , "startColumn" A..= startCol
+    , "endLine" A..= endLine
+    , "endColumn" A..= endCol
+    ]
+
 hstoolsOptions :: Options
 hstoolsOptions = defaultOptions
-  { executeCommandCommands = Just ["CleanDB", "TestNotification", "TestRequest"]
+  { executeCommandCommands = Just ["CleanDB", "TestNotification", "TestRequest", "FindUnusedInstances"]
   , textDocumentSync = Just syncOptions
   }
   where

@@ -44,10 +44,14 @@ hsToolsDefaultConfig :: IO Config
 hsToolsDefaultConfig = do
   fileRecords <- newEmptyMVar
   connection <- newEmptyMVar
+  dbLock <- newMVar ()
+  notifyConnection <- newMVar Nothing
   requestThreads <- newMVar Map.empty
   return $ Config
     { cfPostgresqlConnectionString = ""
     , cfConnection = connection
+    , cfDbLock = dbLock
+    , cfNotifyConnection = notifyConnection
     , cfOperation = Nothing
     , cfFileRecords = fileRecords
     , cfLogOptions = defaultLogOptions
@@ -58,6 +62,8 @@ hsToolsDefaultConfig = do
 data Config = Config
   { cfPostgresqlConnectionString :: String
   , cfConnection :: MVar Connection
+  , cfDbLock :: MVar ()
+  , cfNotifyConnection :: MVar (Maybe Connection)
   , cfOperation :: Maybe String
   , cfFileRecords :: FileRecords
   , cfLogOptions :: LogOptions

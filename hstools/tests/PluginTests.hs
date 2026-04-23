@@ -264,6 +264,58 @@ test_typeErrorShouldNotClearExistingData = useTestRepo $ do
   names <- getAllNames
   liftIO $ gsubAssert $ assertHasNameNoType names (2, 1, Global "X.x", Definition)
 
+-----------------------------------------
+--- instance tracking test cases
+
+test_handWrittenInstance :: Assertion
+test_handWrittenInstance = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data X = X", "instance Show X where", "  show X = \"x\""] runGhcTest
+  instances <- getAllInstances
+  liftIO $ assertBoolVerbose ("instances: " ++ show instances)
+    $ any (\(_, _, cls, typ, kind, _, _, _, _) -> cls == "Show" && typ == "X" && kind == HandWrittenInstance) instances
+
+test_derivingClause :: Assertion
+test_derivingClause = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data X = X deriving (Show, Eq)"] runGhcTest
+  instances <- getAllInstances
+  liftIO $ assertBoolVerbose ("instances: " ++ show instances)
+    $ any (\(_, _, cls, _, kind, _, _, _, _) -> cls == "Show" && kind == DerivedInstance) instances
+  liftIO $ assertBoolVerbose ("instances: " ++ show instances)
+    $ any (\(_, _, cls, _, kind, _, _, _, _) -> cls == "Eq" && kind == DerivedInstance) instances
+
+test_standaloneDeriving :: Assertion
+test_standaloneDeriving = useTestRepo $ do
+  withTestFileLines testFile ["{-# LANGUAGE StandaloneDeriving #-}", "module X where", "data X = X", "deriving instance Show X"] runGhcTest
+  instances <- getAllInstances
+  liftIO $ assertBoolVerbose ("instances: " ++ show instances)
+    $ any (\(_, _, cls, typ, kind, _, _, _, _) -> cls == "Show" && typ == "X" && kind == StandaloneDerivedInstance) instances
+
+test_instanceWithContext :: Assertion
+test_instanceWithContext = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data Box a = Box a", "instance Show a => Show (Box a) where", "  show (Box a) = show a"] runGhcTest
+  instances <- getAllInstances
+  liftIO $ assertBoolVerbose ("instances: " ++ show instances)
+    $ any (\(_, _, cls, _, kind, _, _, _, _) -> cls == "Show" && kind == HandWrittenInstance) instances
+  deps <- getInstanceDeps
+  liftIO $ assertBoolVerbose ("deps: " ++ show deps)
+    $ any (\(_, rc, _) -> rc == "Show") deps
+
+test_instanceUsage :: Assertion
+test_instanceUsage = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "x :: String", "x = show (42 :: Int)"] runGhcTest
+  usages <- getInstanceUsages
+  liftIO $ assertBoolVerbose ("usages: " ++ show usages)
+    $ not (null usages)
+
+test_reStoreInstances :: Assertion
+test_reStoreInstances = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data X = X deriving (Show)"] runGhcTest
+  withTestFileLines testFile ["module X where", "data X = X deriving (Show, Eq)"] runGhcTest
+  instances <- getAllInstances
+  let derivedInstances = filter (\(_, _, _, _, kind, _, _, _, _) -> kind == DerivedInstance) instances
+  liftIO $ assertBoolVerbose ("instances after re-store: " ++ show instances)
+    $ length derivedInstances == 2
+
 ------------------------------------------------------------------------------
 
 data NameDefinition = Global { ndName :: String } | Local { ndName :: String }
