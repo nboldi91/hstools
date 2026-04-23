@@ -104,7 +104,6 @@ handlers = mconcat
 
   , request STextDocumentHover $ \(HoverParams (TextDocumentIdentifier uri) pos _workDone) responder ->
       ensureFileLocationRequest uri responder $ \file -> do
-        liftIO $ threadDelay 10000000
         rewrites <- getRewrites file
         case newToOriginalPos rewrites (posToSP pos) of
           Right originalPos -> do
