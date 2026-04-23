@@ -36,6 +36,7 @@ import HsExtension
 import HsImpExp
 import HsTypes
 import qualified Class as GHC
+import InstEnv (instanceDFunId)
 import Id
 import Name
 import OccName (occNameString)
@@ -44,7 +45,7 @@ import SrcLoc
 import TcEvidence
 import TcRnTypes
 import TcType (tcSplitSigmaTy)
-import Type (getClassPredTys_maybe)
+import Type (Type, getClassPredTys_maybe, splitTyConApp_maybe)
 import UniqFM
 
 import Language.Haskell.HsTools.Plugin.Monad
@@ -259,6 +260,129 @@ persistInstances moduleId instances = do
     when (not $ null ctx) $
       persistInstanceDeps (map (\(rc, rt) -> (instId, rc, rt)) ctx)
 
+-- | Extract and persist instance dependencies from the typechecked AST.
+-- For each instance definition (AbsBinds with DFunId export), extract
+-- DFun references from its evidence bindings and method implementations.
+-- These represent the instances required by this instance (e.g. Eq Inner for Eq Outer).
+--
+-- Example: given the source
+--
+-- @
+--   data Inner = Inner deriving (Eq)
+--   data Outer = Outer Inner deriving (Eq)
+-- @
+--
+-- GHC generates top-level bindings in tcg_binds (simplified):
+--
+-- @
+--   $fEqInner :: Eq Inner             -- DFun AbsBinds
+--   $c==_Inner :: Inner -> Inner -> Bool  -- method, no DFun evidence
+--   $fEqOuter :: Eq Outer             -- DFun AbsBinds
+--   $c==_Outer :: Outer -> Outer -> Bool  -- method, evidence refs $fEqInner
+-- @
+--
+-- This function groups $c bindings with their preceding DFun by position,
+-- then extracts DFun references from the method evidence. For $c==_Outer,
+-- the evidence contains $fEqInner, so we store:
+--
+--   instance_deps: (instanceId of Eq Outer, requiredClass="Eq", requiredType="Inner")
+--
+-- Additionally, it inspects tcg_insts (ClsInst) for context-based deps.
+-- For parameterized types like @data Box a = Box a deriving (Eq)@, GHC gives
+-- the DFun type @Eq a => Eq (Box a)@. The @Eq a@ constraint is recorded so
+-- that when the recursive CTE in getUnusedInstances walks instance_deps,
+-- concrete instantiations (e.g. Eq Fruit for Box Fruit) can be traced.
+storeInstanceDepsFromTc :: TcGblEnv -> StoreStageM ()
+storeInstanceDepsFromTc env = do
+  StoreParams _ _ (_, moduleId) <- ask
+  -- Extract deps from evidence in $c-prefixed method bindings
+  depsPerInstance <- liftIO $ extractInstanceDeps (tcg_binds env)
+  forM_ depsPerInstance $ \(defDFun, depRecords) -> do
+    let InstanceUsageRecord defCls defTyp = dfunToUsageRecord defDFun
+    maybeInstId <- withReaderT storeParamsDbConn $ lookupInstanceId moduleId defCls defTyp
+    case maybeInstId of
+      Just instId -> do
+        let newDeps = [ (instId, iuClassName r, iuTypeName r)
+                      | r <- depRecords
+                      , iuClassName r /= defCls || iuTypeName r /= defTyp  -- skip self-refs
+                      ]
+        when (not $ null newDeps) $
+          withReaderT storeParamsDbConn $ persistInstanceDeps newDeps
+      Nothing -> return ()
+  -- Extract deps from instance contexts in tcg_insts (covers parameterized derived instances)
+  forM_ (tcg_insts env) $ \clsInst -> do
+    let dfunId = instanceDFunId clsInst
+        InstanceUsageRecord defCls defTyp = dfunToUsageRecord dfunId
+        instTy = idType dfunId
+        (_, theta, _) = tcSplitSigmaTy instTy
+        -- theta contains the constraints (e.g. [Show a] for Show a => Show (Box a))
+        -- But these are just class constraints on type variables, not concrete deps.
+        -- We need to look at the superclasses differently.
+        -- For derived instances, theta may contain concrete constraints like Eq Inner
+        contextDeps = concatMap extractDepsFromPred theta
+    maybeInstId <- withReaderT storeParamsDbConn $ lookupInstanceId moduleId defCls defTyp
+    case maybeInstId of
+      Just instId -> do
+        let newDeps = [ (instId, cls, typ)
+                      | (cls, typ) <- contextDeps
+                      , cls /= defCls || typ /= defTyp
+                      ]
+        when (not $ null newDeps) $
+          withReaderT storeParamsDbConn $ persistInstanceDeps newDeps
+      Nothing -> return ()
+
+-- | Extract (className, typeName) from a class predicate type
+extractDepsFromPred :: Type -> [(String, String)]
+extractDepsFromPred pred = case getClassPredTys_maybe pred of
+  Just (cls, [ty]) -> [(showSDocUnsafe $ ppr $ GHC.className cls, extractHeadTyCon ty)]
+  Just (cls, tys) -> [(showSDocUnsafe $ ppr $ GHC.className cls, showSDocUnsafe $ ppr tys)]
+  Nothing -> []
+
+-- | For each instance-definition AbsBinds, extract (definingDFunId, [dependencyRecords]).
+-- In GHC 8.6, the method implementations ($c-prefixed bindings) are top-level siblings,
+-- not nested inside the DFun AbsBinds. Their evidence bindings reference both the parent
+-- DFun and any dependency DFuns. We collect all DFun references from $c-prefixed evidence
+-- and associate them with the parent DFun.
+extractInstanceDeps :: LHsBinds GhcTc -> IO [(Id, [InstanceUsageRecord])]
+extractInstanceDeps binds = do
+  let allBinds = map unLoc (bagToList binds)
+      -- Walk binds in order, associating each $c binding with the most recent DFun
+      grouped = groupMethodsWithDFun allBinds
+  -- For each DFun, collect DFun references from its $c methods' evidence
+  -- that are NOT the parent DFun itself (those are deps)
+  results <- forM grouped $ \(dfunId, methodBinds) -> do
+    let parentRec = dfunToUsageRecord dfunId
+    deps <- fmap concat $ forM methodBinds $ \case
+      AbsBinds _ _ _ _ evBinds _ _ -> do
+        evUsages <- fmap concat $ mapM extractUsagesFromTcEvBinds evBinds
+        return $ filter (/= parentRec) evUsages
+      _ -> return []
+    return (dfunId, Set.toList $ Set.fromList deps)
+  return [ r | r@(_, deps) <- results, not (null deps) ]
+
+-- | Walk binds in order and associate each $c-prefixed binding with
+-- the most recently seen DFun binding.
+groupMethodsWithDFun :: [HsBind GhcTc] -> [(Id, [HsBind GhcTc])]
+groupMethodsWithDFun = go Nothing []
+  where
+    go currentDFun acc [] = flush currentDFun acc
+    go currentDFun acc (b:bs) = case getDFunExport b of
+      Just dfunId ->
+        flush currentDFun acc ++ go (Just dfunId) [] bs
+      Nothing
+        | isMethodBind b -> go currentDFun (acc ++ [b]) bs
+        | otherwise -> go currentDFun acc bs
+    flush (Just dfun) methods = [(dfun, methods)]
+    flush Nothing _ = []
+    getDFunExport (AbsBinds _ _ _ exports _ _ _) =
+      case find (isDFunId . abe_poly) exports of
+        Just e -> Just (abe_poly e)
+        Nothing -> Nothing
+    getDFunExport _ = Nothing
+    isMethodBind (AbsBinds _ _ _ exports _ _ _) =
+      any (isInstanceMethodExport . abe_poly) exports
+    isMethodBind _ = False
+
 -- | Extract and persist instance usage evidence from the typechecked AST.
 -- In GHC 8.6, evidence for instance resolution is embedded inside
 -- tcg_binds (the typechecked HsExpr trees) rather than tcg_ev_binds.
@@ -266,17 +390,27 @@ persistInstances moduleId instances = do
 storeInstanceUsages :: TcGblEnv -> StoreStageM ()
 storeInstanceUsages env = do
   StoreParams logOptions _ (_, moduleId) <- ask
-  -- Build resolution map from tcg_ev_binds: for each evidence binding
-  -- where the RHS is a DFun, map the LHS evidence variable to the usage record
-  let evResolutionMap = Map.fromList
-        [ (eb_lhs b, rec)
-        | b <- bagToList (tcg_ev_binds env)
-        , rec <- extractUsageFromEvBind b
+  -- Build raw resolution map from tcg_ev_binds: for each evidence binding,
+  -- collect direct DFun usages and evidence variable references
+  let evBindsList = bagToList (tcg_ev_binds env)
+      rawMap = Map.fromList
+        [ (eb_lhs b, (extractUsageFromEvBind b, collectEvVarsFromEvBind b))
+        | b <- evBindsList
+        ]
+      -- Transitively resolve: for each ev var, collect all DFun usages reachable
+      resolveAll visited var = case Map.lookup var rawMap of
+        _ | Set.member var visited -> []
+        Just (usages, evRefs) ->
+          usages ++ concatMap (resolveAll (Set.insert var visited)) (Set.toList evRefs)
+        Nothing -> []
+      evResolutionMap = Map.fromList
+        [ (v, resolveAll Set.empty v)
+        | v <- map eb_lhs evBindsList
         ]
   -- Extract DFunId usages and evidence variable IDs from non-instance bindings
   (tcBindUsages, evVarIds) <- liftIO $ extractDFunIdsAndEvVars (tcg_binds env)
   -- Resolve evidence variables to DFun usage records
-  let resolvedUsages = mapMaybe (`Map.lookup` evResolutionMap) (Set.toList evVarIds)
+  let resolvedUsages = concatMap (\v -> fromMaybe [] (Map.lookup v evResolutionMap)) (Set.toList evVarIds)
   let usages = tcBindUsages ++ resolvedUsages
       uniqueUsages = Set.toList $ Set.fromList usages
   when (logOptionsFullData logOptions) $ liftIO $ do
@@ -374,9 +508,10 @@ extractDFunIdsAndEvVars binds = do
       let (u, v) = unzip results in return (concat u, Set.unions v)
     extractFromExpr (HsLam _ mg) = extractFromMG mg
     extractFromExpr _ = return ([], Set.empty)
-    extractFromWrapper (WpEvApp (EvExpr (Var v)))
-      | isDFunId v = ([dfunToUsageRecord v], Set.empty)
-      | otherwise = ([], Set.singleton v)  -- evidence variable, collect it
+    extractFromWrapper (WpEvApp (EvExpr expr)) =
+      let usages = extractUsageFromCoreExpr expr
+          evVars = collectEvVars expr
+      in (usages, evVars)
     extractFromWrapper (WpEvApp _) = ([], Set.empty)
     extractFromWrapper (WpCompose w1 w2) =
       let (u1, v1) = extractFromWrapper w1
@@ -399,10 +534,18 @@ dfunToUsageRecord v =
       -- strip foralls and constraints to get to the class predicate (e.g. Show Int)
       (_, _, classPred) = tcSplitSigmaTy ty
       (className, typeName) = case getClassPredTys_maybe classPred of
+        Just (cls, [ty]) -> (showSDocUnsafe $ ppr $ className' cls, extractHeadTyCon ty)
         Just (cls, tys) -> (showSDocUnsafe $ ppr $ className' cls, showSDocUnsafe $ ppr tys)
         Nothing -> (showSDocUnsafe $ ppr classPred, "")
       className' cls = GHC.className cls
   in InstanceUsageRecord className typeName
+
+-- | Extract the head type constructor name from a type.
+-- For "Box a" returns "Box", for "Int" returns "Int", for type variables returns their name.
+extractHeadTyCon :: Type -> String
+extractHeadTyCon ty = case splitTyConApp_maybe ty of
+  Just (tc, _) -> showSDocUnsafe (ppr tc)
+  Nothing -> showSDocUnsafe (ppr ty)
 
 -- | Extract instance usage from a single evidence binding
 extractUsageFromEvBind :: EvBind -> [InstanceUsageRecord]
@@ -430,3 +573,16 @@ extractUsageFromCoreExpr (Var v)
   | otherwise = []
 extractUsageFromCoreExpr (App f a) = extractUsageFromCoreExpr f ++ extractUsageFromCoreExpr a
 extractUsageFromCoreExpr _ = []
+
+-- | Collect non-DFun evidence variable references from an EvBind's RHS
+collectEvVarsFromEvBind :: EvBind -> Set.Set Id
+collectEvVarsFromEvBind (EvBind { eb_rhs = EvExpr expr }) = collectEvVars expr
+collectEvVarsFromEvBind _ = Set.empty
+
+-- | Collect non-DFun evidence variables from a Core expression
+collectEvVars :: CoreExpr -> Set.Set Id
+collectEvVars (Var v)
+  | not (isDFunId v) = Set.singleton v
+  | otherwise = Set.empty
+collectEvVars (App f a) = Set.union (collectEvVars f) (collectEvVars a)
+collectEvVars _ = Set.empty

@@ -261,6 +261,19 @@ persistInstance mod astNode className typeName kind =
     |]
     (mod, astNode, className, typeName, fromEnum kind)
 
+lookupInstanceId :: DBMonad m => Int -> String -> String -> m (Maybe Int)
+lookupInstanceId mod className typeName = do
+  rows <- query
+    [sql|
+      SELECT instanceId FROM instances
+      WHERE module = ? AND className = ? AND typeName = ?
+      LIMIT 1
+    |]
+    (mod, className, typeName)
+  return $ case rows of
+    [[iid]] -> Just iid
+    _ -> Nothing
+
 persistInstanceDeps :: DBMonad m => [(Int, String, String)] -> m ()
 persistInstanceDeps deps = void $ executeMany
   [sql|
@@ -303,20 +316,35 @@ getInstanceUsages =
       FROM instance_usages
     |]
 
--- | Get instances that have no matching usage (by className)
+-- | Get instances that have no matching usage (by className and typeName).
+-- An instance is considered "used" if:
+--   1. There is a direct usage record matching its className and typeName, OR
+--   2. Another instance that depends on it (via instance_deps) is used.
 getUnusedInstances :: DBMonad m => m [(Int, String, String, String, InstanceKind, Int, Int, Int, Int)]
 getUnusedInstances =
   map (\(iid, fp, cls, typ, kind, sr, sc, er, ec) -> (iid, fp, cls, typ, toEnum kind, sr, sc, er, ec)) <$> query_
     [sql|
+      WITH RECURSIVE used_instances AS (
+        -- Base case: instances with direct usage records
+        SELECT DISTINCT i.instanceId, i.className, i.typeName
+        FROM instances i
+        JOIN instance_usages u ON u.className = i.className AND u.typeName = i.typeName
+
+        UNION
+
+        -- Recursive case: instances required by already-used instances
+        SELECT i2.instanceId, i2.className, i2.typeName
+        FROM used_instances ui
+        JOIN instances ui_inst ON ui_inst.instanceId = ui.instanceId
+        JOIN instance_deps d ON d.instanceId = ui_inst.instanceId
+        JOIN instances i2 ON i2.className = d.requiredClass AND i2.typeName = d.requiredType
+      )
       SELECT i.instanceId, m.filePath, i.className, i.typeName, i.instanceKind,
              a.startRow, a.startColumn, a.endRow, a.endColumn
       FROM instances i
       JOIN modules m ON i.module = m.moduleId
       JOIN ast a ON i.astNode = a.astId
-      WHERE NOT EXISTS (
-        SELECT 1 FROM instance_usages u
-        WHERE u.className = i.className
-      )
+      WHERE i.instanceId NOT IN (SELECT instanceId FROM used_instances)
     |]
 
 getAllDefinitions :: DBMonad m => m [(DefinitionKind, Maybe String, Int, Int, Int, Int)]

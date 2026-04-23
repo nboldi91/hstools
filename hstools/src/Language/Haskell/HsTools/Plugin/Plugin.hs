@@ -109,6 +109,7 @@ typeCheckAction options (ms, env) = withDB options $ \conn -> liftIO $ do
   performStage "typeCheck" ms (< TypesLoaded) TypesLoaded $ do
     storeTypes env
     storeInstanceUsages env
+    storeInstanceDepsFromTc env
   performStage "main" ms (== TypesLoaded) TypesLoaded $ storeMain $ tcg_main env
   return env
 

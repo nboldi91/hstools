@@ -178,6 +178,29 @@ test_findUnusedInstances_derived = withPluginPopulatedDB
     ("Expected Show NOT to be unused but got: " ++ show unused)
     (not $ any (\(_, _, cls, _, _, _, _, _, _) -> cls == "Show") unused)
 
+-- | Regression: using a class on one type must not mark all instances of that
+-- class as used.  The old query matched only on className, so a single Eq usage
+-- on type A would prevent Eq B from being reported as unused.
+test_findUnusedInstances_classNotSharedAcrossTypes :: Assertion
+test_findUnusedInstances_classNotSharedAcrossTypes = withPluginPopulatedDB
+  [ ("V.hs", unlines
+      [ "module V where"
+      , "data A = A deriving (Eq)"
+      , "data B = B deriving (Eq)"
+      , "same :: A -> A -> Bool"
+      , "same x y = x == y"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  -- Eq A is used via (==), but Eq B is never used
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  liftIO $ assertBoolVerbose
+    ("Expected Eq B to be unused but got: " ++ show unusedPairs)
+    (("Eq", "B") `elem` unusedPairs)
+  liftIO $ assertBoolVerbose
+    ("Expected Eq A NOT to be unused but got: " ++ show unusedPairs)
+    (("Eq", "A") `notElem` unusedPairs)
+
 test_findUnusedInstances_nestedUsed :: Assertion
 test_findUnusedInstances_nestedUsed = withPluginPopulatedDB
   [ ("R.hs", unlines
@@ -189,12 +212,16 @@ test_findUnusedInstances_nestedUsed = withPluginPopulatedDB
       ])
   ] $ \_tmpDir -> do
   instances <- getAllInstances
+  usages <- getInstanceUsages
+  deps <- getInstanceDeps
   unused <- getUnusedInstances
   -- Using == on Outer requires Eq Outer which depends on Eq Inner
   -- so neither Eq instance should be unused
   liftIO $ assertBoolVerbose
     ("Expected no unused Eq instances but got: " ++ show unused
-      ++ "\nInstances: " ++ show instances)
+      ++ "\nInstances: " ++ show instances
+      ++ "\nUsages: " ++ show usages
+      ++ "\nDeps: " ++ show deps)
     (not $ any (\(_, _, cls, _, _, _, _, _, _) -> cls == "Eq") unused)
 
 test_findUnusedInstances_nestedUnused :: Assertion
@@ -260,13 +287,15 @@ test_findUnusedInstances_genericDataType = withPluginPopulatedDB
       ])
   ] $ \_tmpDir -> do
   instances <- getAllInstances
+  usages <- getInstanceUsages
   unused <- getUnusedInstances
   -- show myBox forces Show (Box Fruit) which requires Show Fruit
   -- Eq Box and Eq Fruit are never used
   let unusedClasses = map (\(_, _, cls, _, _, _, _, _, _) -> cls) unused
   liftIO $ assertBoolVerbose
     ("Expected Show NOT to be unused but got: " ++ show unused
-      ++ "\nInstances: " ++ show instances)
+      ++ "\nInstances: " ++ show instances
+      ++ "\nUsages: " ++ show usages)
     ("Show" `notElem` unusedClasses)
   liftIO $ assertBoolVerbose
     ("Expected Eq to be unused but got: " ++ show unused
