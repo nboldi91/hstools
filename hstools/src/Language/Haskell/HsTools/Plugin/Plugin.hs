@@ -10,7 +10,7 @@ import Control.Monad.Reader
 import qualified Data.ByteString.Char8 as BS
 import Data.Maybe
 import Data.Time.Clock
-import Database.PostgreSQL.Simple (Connection, withTransaction, connectPostgreSQL)
+import Database.PostgreSQL.Simple (Connection, withTransaction, connectPostgreSQL, close)
 import Options.Applicative
 import Options.Applicative.Builder (defaultPrefs)
 import Options.Applicative.Help.Chunk (stringChunk, (<</>>))
@@ -58,7 +58,9 @@ data PluginOptions = PluginOptions
 withDB :: MonadIO m => PluginOptions -> (Connection -> m a) -> m a
 withDB pluginOpts action = do
   conn <- liftIO $ connectPostgreSQL $ BS.pack $ poConnectionString pluginOpts
-  action conn
+  result <- action conn
+  liftIO $ close conn
+  return result
 
 cleanAndRecordModule :: DbConn -> ModSummary -> IO ()
 cleanAndRecordModule conn ms = do
@@ -108,6 +110,7 @@ typeCheckAction options (ms, env) = withDB options $ \conn -> liftIO $ do
   let performStage = doRunStage (poLogOptions options) conn
   performStage "typeCheck" ms (< TypesLoaded) TypesLoaded $ do
     storeTypes env
+    normalizeInstanceNames env
     storeInstanceUsages env
     storeInstanceDepsFromTc env
   performStage "main" ms (== TypesLoaded) TypesLoaded $ storeMain $ tcg_main env

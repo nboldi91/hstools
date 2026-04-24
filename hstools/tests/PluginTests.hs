@@ -295,7 +295,7 @@ test_instanceWithContext = useTestRepo $ do
   withTestFileLines testFile ["module X where", "data Box a = Box a", "instance Show a => Show (Box a) where", "  show (Box a) = show a"] runGhcTest
   instances <- getAllInstances
   liftIO $ assertBoolVerbose ("instances: " ++ show instances)
-    $ any (\(_, _, cls, _, kind, _, _, _, _) -> cls == "Show" && kind == HandWrittenInstance) instances
+    $ any (\(_, _, cls, typ, kind, _, _, _, _) -> cls == "Show" && typ == "Box" && kind == HandWrittenInstance) instances
   deps <- getInstanceDeps
   liftIO $ assertBoolVerbose ("deps: " ++ show deps)
     $ any (\(_, rc, _) -> rc == "Show") deps
@@ -306,6 +306,19 @@ test_instanceUsage = useTestRepo $ do
   usages <- getInstanceUsages
   liftIO $ assertBoolVerbose ("usages: " ++ show usages)
     $ not (null usages)
+
+test_instanceUsageInGuard :: Assertion
+test_instanceUsageInGuard = useTestRepo $ do
+  withTestFileLines testFile
+    [ "module X where"
+    , "data D = A | B deriving (Eq)"
+    , "f :: D -> Int"
+    , "f x | x == A = 1"
+    , "    | otherwise = 2"
+    ] runGhcTest
+  usages <- getInstanceUsages
+  liftIO $ assertBoolVerbose ("usages should contain Eq D from guard: " ++ show usages)
+    $ any (\(cls, typ) -> cls == "Eq" && typ == "D") usages
 
 test_reStoreInstances :: Assertion
 test_reStoreInstances = useTestRepo $ do

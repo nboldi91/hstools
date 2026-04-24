@@ -44,13 +44,14 @@ import Language.Haskell.HsTools.Utils
 
 -- | Run the GHC 8.6 plugin on a list of source files to populate the database.
 -- The plugin project must be built beforehand (stack build in hstools/).
-runPluginOnFiles :: String -> [FilePath] -> IO ()
-runPluginOnFiles connStr files = do
+runPluginOnFiles :: String -> FilePath -> [FilePath] -> IO ()
+runPluginOnFiles connStr baseDir files = do
   let pluginDir = ".." </> "hstools"
   forM_ files $ \file -> do
     (exitCode, _stdout, stderr) <- readProcessWithExitCode "stack"
       [ "exec", "--stack-yaml", pluginDir </> "stack.yaml", "--"
       , "ghc", "-fno-code"
+      , "-i" ++ baseDir
       , "-fplugin=Language.Haskell.HsTools.Plugin"
       , "-fplugin-opt=Language.Haskell.HsTools.Plugin:" ++ connStr
       , file
@@ -112,7 +113,7 @@ withPluginPopulatedDB fileContents test = useTestRepo $ do
     (writeTestFiles tmpDir fileContents)
     (\files -> cleanTestFiles files >> removeDirectoryRecursive tmpDir `catch` (\(e :: SomeException) -> return ()))
     (\files -> do
-      runPluginOnFiles connectionString files
+      runPluginOnFiles connectionString tmpDir files
       -- re-enter ReaderT DbConn IO for the assertions
       return ()
     )
@@ -301,6 +302,209 @@ test_findUnusedInstances_genericDataType = withPluginPopulatedDB
     ("Expected Eq to be unused but got: " ++ show unused
       ++ "\nInstances: " ++ show instances)
     ("Eq" `elem` unusedClasses)
+
+-- | A hand-written instance whose class has a superclass constraint.
+-- Using the subclass instance should keep the superclass instance alive.
+test_findUnusedInstances_superclassDep :: Assertion
+test_findUnusedInstances_superclassDep = withPluginPopulatedDB
+  [ ("W.hs", unlines
+      [ "module W where"
+      , "class Eq a => MyOrd a where"
+      , "  cmp :: a -> a -> Bool"
+      , "data Rec = Rec Int deriving (Eq)"
+      , "instance MyOrd Rec where"
+      , "  cmp x y = x == y"
+      , "test :: Rec -> Rec -> Bool"
+      , "test = cmp"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- MyOrd Rec is used (via cmp), and it requires Eq Rec as superclass
+  -- so Eq Rec should NOT be unused
+  liftIO $ assertBoolVerbose
+    ("Expected MyOrd Rec NOT to be unused but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("MyOrd", "Rec") `notElem` unusedPairs)
+  liftIO $ assertBoolVerbose
+    ("Expected Eq Rec NOT to be unused (superclass of MyOrd) but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("Eq", "Rec") `notElem` unusedPairs)
+
+-- | An empty hand-written instance where the class has a default method
+-- that requires Show.  Mirrors the DeriveAnyClass Binary+Generic pattern:
+-- the empty instance body relies on the default method, which needs another
+-- instance.  Using the outer instance should keep the inner one alive.
+test_findUnusedInstances_defaultMethodDep :: Assertion
+test_findUnusedInstances_defaultMethodDep = withPluginPopulatedDB
+  [ ("X.hs", unlines
+      [ "{-# LANGUAGE DefaultSignatures #-}"
+      , "module X where"
+      , "class MySerialize a where"
+      , "  encode :: a -> String"
+      , "  default encode :: Show a => a -> String"
+      , "  encode = show"
+      , "data Rec = Rec Int deriving (Show)"
+      , "instance MySerialize Rec"
+      , "test :: String"
+      , "test = encode (Rec 42)"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- MySerialize Rec is used (via encode), its default method needs Show Rec
+  -- so Show Rec should NOT be unused
+  liftIO $ assertBoolVerbose
+    ("Expected MySerialize Rec NOT to be unused but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("MySerialize", "Rec") `notElem` unusedPairs)
+  liftIO $ assertBoolVerbose
+    ("Expected Show Rec NOT to be unused (needed by default encode) but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("Show", "Rec") `notElem` unusedPairs)
+
+-- | Derived Data instances where the dependency is in the method body (gfoldl),
+-- not in the evidence bindings.  A container type's Data instance references
+-- the sub-type's Data instance via the higher-order 'k' argument.
+test_findUnusedInstances_dataDerivedDep :: Assertion
+test_findUnusedInstances_dataDerivedDep = withPluginPopulatedDB
+  [ ("DD.hs", unlines
+      [ "{-# LANGUAGE DeriveDataTypeable #-}"
+      , "module DD where"
+      , "import Data.Data (Data, toConstr)"
+      , "data Sub = Sub Int deriving (Data)"
+      , "data Container = Container Sub deriving (Data)"
+      , "-- Use Data Container via toConstr"
+      , "test :: Container -> String"
+      , "test x = show (toConstr x)"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- Data Container depends on Data Sub via gfoldl body — verify in deps
+  let depPairs = map (\(_, cls, typ) -> (cls, typ)) deps
+  liftIO $ assertBoolVerbose
+    ("Expected dep (Data, Sub) in instance_deps but got: " ++ show deps)
+    (("Data", "Sub") `elem` depPairs)
+  -- Data Container is used; it depends on Data Sub via gfoldl body
+  -- so Data Sub should NOT be unused
+  liftIO $ assertBoolVerbose
+    ("Expected Data Sub NOT to be unused but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("Data", "Sub") `notElem` unusedPairs)
+
+-- | An empty instance whose default method needs Generic (mirrors Binary+Generic).
+-- Using the outer instance should keep Generic alive.
+test_findUnusedInstances_defaultMethodGenericDep :: Assertion
+test_findUnusedInstances_defaultMethodGenericDep = withPluginPopulatedDB
+  [ ("Y.hs", unlines
+      [ "{-# LANGUAGE DefaultSignatures, DeriveGeneric #-}"
+      , "module Y where"
+      , "import GHC.Generics (Generic)"
+      , "class MyBinary a where"
+      , "  myPut :: a -> String"
+      , "  default myPut :: (Generic a, Show a) => a -> String"
+      , "  myPut = show"
+      , "data Cfg = Cfg { val :: Int } deriving (Show, Generic)"
+      , "instance MyBinary Cfg"
+      , "test :: String"
+      , "test = myPut (Cfg 1)"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  instances <- getAllInstances
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- MyBinary Cfg is used; its default myPut needs Generic Cfg
+  -- so Generic Cfg should NOT be unused
+  liftIO $ assertBoolVerbose
+    ("Expected Generic Cfg NOT to be unused but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps
+      ++ "\nInstances: " ++ show instances)
+    (not $ any (\(c, _) -> c == "Generic") unusedPairs)
+
+-- | NFData with a list field: NFData Outer depends on NFData [Inner]
+-- which depends on NFData Inner.  NFData Inner should be kept alive.
+-- This mirrors the NFData SchemaDefaultPermissionMetadata case.
+test_findUnusedInstances_nfdataListFieldDep :: Assertion
+test_findUnusedInstances_nfdataListFieldDep = withPluginPopulatedDB
+  [ ("NF.hs", unlines
+      [ "module NF where"
+      , "import Control.DeepSeq (NFData(..))"
+      , "data Inner = Inner Int"
+      , "instance NFData Inner where rnf (Inner x) = rnf x"
+      , "data Outer = Outer [Inner]"
+      , "instance NFData Outer where rnf (Outer xs) = rnf xs"
+      , "test :: Outer -> ()"
+      , "test x = rnf x"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- NFData Outer is used; its rnf calls rnf on [Inner] which needs NFData Inner
+  liftIO $ assertBoolVerbose
+    ("Expected NFData Inner NOT to be unused but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps)
+    (("NFData", "Inner") `notElem` unusedPairs)
+
+-- | Derived NFData with list field — matches the bug report NFData pattern.
+-- GHC DeriveAnyClass creates $crnf that references $fNFDataInner via
+-- evidence in method body expressions.
+test_findUnusedInstances_derivedNfdataListDep :: Assertion
+test_findUnusedInstances_derivedNfdataListDep = withPluginPopulatedDB
+  [ ("NF2.hs", unlines
+      [ "{-# LANGUAGE DeriveGeneric, DeriveAnyClass #-}"
+      , "module NF2 where"
+      , "import GHC.Generics (Generic)"
+      , "import Control.DeepSeq (NFData)"
+      , "data Inner = Inner Int deriving (Generic, NFData)"
+      , "data Outer = Outer [Inner] deriving (Generic, NFData)"
+      , "-- no usage here to test dep extraction only"
+      ])
+  ] $ \_tmpDir -> do
+  deps <- getInstanceDeps
+  let depPairs = map (\(_, cls, typ) -> (cls, typ)) deps
+  -- NFData Outer should depend on NFData Inner
+  liftIO $ assertBoolVerbose
+    ("Expected dep (NFData, Inner) in instance_deps but got: " ++ show deps)
+    (("NFData", "Inner") `elem` depPairs)
+
+-- | Cross-module transitive dependency: module A defines a type with derived
+-- instances, module B imports it, wraps it in a new type that also derives
+-- the same class, and uses the outer type.  The inner type's instance should
+-- be marked as used transitively.
+test_findUnusedInstances_crossModuleDep :: Assertion
+test_findUnusedInstances_crossModuleDep = withPluginPopulatedDB
+  [ ("CM/Inner.hs", unlines
+      [ "module CM.Inner where"
+      , "data Sub = Sub Int deriving (Show, Eq)"
+      ])
+  , ("CM/Outer.hs", unlines
+      [ "module CM.Outer where"
+      , "import CM.Inner (Sub(..))"
+      , "data Container = Container Sub deriving (Show)"
+      , "test :: String"
+      , "test = show (Container (Sub 1))"
+      ])
+  ] $ \_tmpDir -> do
+  unused <- getUnusedInstances
+  deps <- getInstanceDeps
+  instances <- getAllInstances
+  let unusedPairs = map (\(_, _, cls, typ, _, _, _, _, _) -> (cls, typ)) unused
+  -- Show Container is used (via show); it depends on Show Sub (cross-module)
+  -- so Show Sub should NOT be unused.  Eq Sub IS unused.
+  liftIO $ assertBoolVerbose
+    ("Expected Show Sub NOT to be unused (cross-module dep) but got: " ++ show unusedPairs
+      ++ "\nDeps: " ++ show deps
+      ++ "\nInstances: " ++ show instances)
+    (("Show", "Sub") `notElem` unusedPairs)
+  liftIO $ assertBoolVerbose
+    ("Expected Eq Sub to be unused but got: " ++ show unusedPairs)
+    (("Eq", "Sub") `elem` unusedPairs)
 
 test_findUnusedInstances_lspRequest :: Assertion
 test_findUnusedInstances_lspRequest = withPluginPopulatedDB

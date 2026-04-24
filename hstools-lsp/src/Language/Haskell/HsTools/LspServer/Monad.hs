@@ -65,7 +65,10 @@ newRequestThread (LSP.RequestMessage _ reqId _ params) responder f = do
       threadId <- forkLsp $
         f params responder
           `catch` \(_ :: RequestCancelledException) -> return () -- handle being cancelled
-          `catch` \(e :: SomeException) -> sendError (T.pack $ "Error during " ++ operation ++ ": " ++ show e)
+          `catch` \(e :: SomeException) -> do
+            let msg = T.pack $ "Error during " ++ operation ++ ": " ++ show e
+            sendError msg
+            liftLSP $ responder $ Left $ responseError msg
           `finally` liftIO (modifyMVarPure (Map.delete (LSP.SomeLspId reqId)) requestThreads) -- remove the threadId after completion/error
       -- save the thread id to let the user cancel them
       liftIO $ modifyMVarPure (Map.insert (LSP.SomeLspId reqId) threadId) requestThreads
@@ -135,7 +138,7 @@ instance DBMonad (LspT Config IO) where
   getConnection = cfConnection <$> LSP.getConfig >>= liftIO . readMVar
   withConnectionLock action = do
     lock <- cfDbLock <$> LSP.getConfig
-    withRunInIO $ \runInIO -> withMVar lock $ \() -> runInIO action
+    withRunInIO $ \runInIO -> withMVar lock $ \() -> uninterruptibleMask_ $ runInIO action
   logOperation msg = do 
     logOptions <- cfLogOptions <$> LSP.getConfig
     let isLogging = logOptionsPerformance logOptions || logOptionsQueries logOptions

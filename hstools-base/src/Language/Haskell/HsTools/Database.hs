@@ -274,6 +274,20 @@ lookupInstanceId mod className typeName = do
     [[iid]] -> Just iid
     _ -> Nothing
 
+-- | Get all stored typeNames for a given module and className.
+getInstanceTypeNames :: DBMonad m => Int -> String -> m [String]
+getInstanceTypeNames mod cls = do
+  rows <- query
+    [sql| SELECT typeName FROM instances WHERE module = ? AND className = ? |]
+    (mod, cls)
+  return [t | [t] <- rows]
+
+-- | Update an instance's typeName from oldTyp to newTyp for a given module/class.
+updateInstanceTypeName :: DBMonad m => Int -> String -> String -> String -> m ()
+updateInstanceTypeName mod cls oldTyp newTyp = void $ execute
+  [sql| UPDATE instances SET typeName = ? WHERE module = ? AND className = ? AND typeName = ? |]
+  (newTyp, mod, cls, oldTyp)
+
 persistInstanceDeps :: DBMonad m => [(Int, String, String)] -> m ()
 persistInstanceDeps deps = void $ executeMany
   [sql|
@@ -669,44 +683,50 @@ databaseSchema = [sql|
 -- An additional layer on top of database operations to trace them
 
 execute :: (DBMonad m, ToRow q, Show q) => Query -> q -> m Int64
-execute query input = withConnectionLock $ do
+execute query input = do
   conn <- getConnection
-  wrapLogging ("execute: " ++ show query ++ " with inputs " ++ show input) $
-    liftIO $ PLSQL.execute conn query input
+  withConnectionLock $
+    wrapLogging ("execute: " ++ show query ++ " with inputs " ++ show input) $
+      liftIO $ PLSQL.execute conn query input
 
 execute_ :: DBMonad m => Query -> m Int64
-execute_ query = withConnectionLock $ do
+execute_ query = do
   conn <- getConnection
-  wrapLogging ("execute_: " ++ show query) $
-    liftIO $ PLSQL.execute_ conn query
+  withConnectionLock $
+    wrapLogging ("execute_: " ++ show query) $
+      liftIO $ PLSQL.execute_ conn query
 
 executeMany :: (DBMonad m, ToRow q, Show q) => Query -> [q] -> m Int64
-executeMany query input = withConnectionLock $ do
+executeMany query input = do
   conn <- getConnection
-  logFullData <- shouldLogFullData
-  let fullData = if logFullData then " with inputs " ++ show input else ""
-  wrapLogging ("executeMany: " ++ show query ++ fullData) $
-    liftIO $ PLSQL.executeMany conn query input  
+  withConnectionLock $ do
+    logFullData <- shouldLogFullData
+    let fullData = if logFullData then " with inputs " ++ show input else ""
+    wrapLogging ("executeMany: " ++ show query ++ fullData) $
+      liftIO $ PLSQL.executeMany conn query input  
 
 query :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> q -> m [r]
-query query input = withConnectionLock $ do
+query query input = do
   conn <- getConnection
-  wrapLogging ("query: " ++ show query ++ " with inputs " ++ show input) $
-    liftIO $ PLSQL.query conn query input
+  withConnectionLock $
+    wrapLogging ("query: " ++ show query ++ " with inputs " ++ show input) $
+      liftIO $ PLSQL.query conn query input
 
 query_ :: (DBMonad m, FromRow r) => Query -> m [r]
-query_ query = withConnectionLock $ do
+query_ query = do
   conn <- getConnection
-  wrapLogging ("query_: " ++ show query) $
-    liftIO $ PLSQL.query_ conn query
+  withConnectionLock $
+    wrapLogging ("query_: " ++ show query) $
+      liftIO $ PLSQL.query_ conn query
 
 returning :: (DBMonad m, ToRow q, FromRow r, Show q) => Query -> [q] -> m [r]
-returning query input = withConnectionLock $ do
+returning query input = do
   conn <- getConnection
-  logFullData <- shouldLogFullData
-  let fullData = if logFullData then " with inputs " ++ show input else ""
-  wrapLogging ("returning: " ++ show query ++ fullData) $
-    liftIO $ PLSQL.returning conn query input    
+  withConnectionLock $ do
+    logFullData <- shouldLogFullData
+    let fullData = if logFullData then " with inputs " ++ show input else ""
+    wrapLogging ("returning: " ++ show query ++ fullData) $
+      liftIO $ PLSQL.returning conn query input    
 
 wrapLogging :: DBMonad m => String -> m a -> m a
 wrapLogging query action = do
