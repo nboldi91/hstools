@@ -29,6 +29,7 @@ data NameRecord = NameRecord
   , nmIsDefined :: Bool
   , nmDefinitionOf :: Maybe (Range NodePos)
   , nmPos :: Range NodePos
+  , nmUsageContext :: Maybe UsageContext
   } deriving (Show, Eq, Ord)
 
 data NodePos
@@ -44,6 +45,7 @@ data NameAndTypeRecord = NameAndTypeRecord
   , ntrIsDefined :: Bool
   , ntrType :: Maybe String
   , ntrPos :: Range NodePos
+  , ntrUsageContext :: Maybe UsageContext
   } deriving (Show, Eq, Ord)
 
 data InstanceRecord = InstanceRecord

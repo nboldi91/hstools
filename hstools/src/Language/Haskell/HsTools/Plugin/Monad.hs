@@ -29,6 +29,7 @@ data StoreContext r = StoreContext
   , scInsideDefinition :: Bool
   , scLocalUnderLoc :: StoreM r () -> StoreM r ()
   , scThSpans :: [Range NodePos]
+  , scUsageContext :: Maybe UsageContext
   }
 
 pushDownContext :: (StoreM r () -> StoreM r ()) -> StoreM r () -> StoreM r ()
@@ -41,6 +42,15 @@ applyContext st = do
 
 defining :: StoreM r a -> StoreM r a
 defining = local (\l -> l { scDefining = True })
+
+inExprContext :: StoreM r a -> StoreM r a
+inExprContext = local (\l -> l { scUsageContext = Just ExprContext })
+
+inPatternContext :: StoreM r a -> StoreM r a
+inPatternContext = local (\l -> l { scUsageContext = Just PatternContext })
+
+inTypeContext :: StoreM r a -> StoreM r a
+inTypeContext = local (\l -> l { scUsageContext = Just TypeContext })
 
 withSpan :: SrcSpan -> StoreM r a -> StoreM r a
 withSpan span = local (\l -> l { scSpan = span })
@@ -86,6 +96,7 @@ defaultStoreContext modSpan = do
     , scThSpans = map (\(npStartRow, npStartCol, npEndRow, npEndCol) -> Range (SP npStartRow npStartCol) (SP npEndRow npEndCol)) thSpans
     , scLocalUnderLoc = id
     , scInsideDefinition = False
+    , scUsageContext = Nothing
     }
 
 instance DBMonad PersistStageM where

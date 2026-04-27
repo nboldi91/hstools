@@ -329,6 +329,60 @@ test_reStoreInstances = useTestRepo $ do
   liftIO $ assertBoolVerbose ("instances after re-store: " ++ show instances)
     $ length derivedInstances == 2
 
+-----------------------------------------
+--- usage context test cases
+
+test_usageContextExpr :: Assertion
+test_usageContextExpr = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "x = ()", "y = x"] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 5, Global "X.x", Just ExprContext)
+
+test_usageContextPattern :: Assertion
+test_usageContextPattern = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data D = C", "f C = ()"] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 3, Global "X.C", Just PatternContext)
+
+test_usageContextType :: Assertion
+test_usageContextType = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data D = C", "f :: D -> ()", "f C = ()"] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 6, Global "X.D", Just TypeContext)
+
+test_usageContextConstructorInExpr :: Assertion
+test_usageContextConstructorInExpr = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "data D = C", "x = C"] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 5, Global "X.C", Just ExprContext)
+
+test_usageContextDefinitionIsNothing :: Assertion
+test_usageContextDefinitionIsNothing = useTestRepo $ do
+  withTestFileLines testFile ["module X where", "x = ()"] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (2, 1, Global "X.x", Nothing)
+
+test_usageContextConstructorBothContexts :: Assertion
+test_usageContextConstructorBothContexts = useTestRepo $ do
+  withTestFileLines testFile
+    [ "module X where"
+    , "data D = C Int"
+    , "f (C _) = C 1"
+    ] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 4, Global "X.C", Just PatternContext)
+  liftIO $ gsubAssert $ assertUsageContext names (3, 11, Global "X.C", Just ExprContext)
+
+test_usageContextRecordCon :: Assertion
+test_usageContextRecordCon = useTestRepo $ do
+  withTestFileLines testFile
+    [ "module X where"
+    , "data D = MkD { fld :: Int }"
+    , "x = MkD { fld = 1 }"
+    ] runGhcTest
+  names <- getAllNamesWithUsageContext
+  liftIO $ gsubAssert $ assertUsageContext names (3, 5, Global "X.MkD", Just ExprContext)
+
 ------------------------------------------------------------------------------
 
 data NameDefinition = Global { ndName :: String } | Local { ndName :: String }
@@ -346,6 +400,12 @@ assertHasNameNoType names expected = assertBoolVerbose ("actual names: " ++ show
   where matchRow (l, c, nd, nr) (l', c', n, t', d) =
           l == l' && c == c' && (nr == Definition) == d && Nothing == t'
             && ndName nd == fnName n && (case nd of Local n' -> isJust (fnLocalName n); _ -> True)
+
+assertUsageContext :: HasCallStack => [(Int, Int, FullName, Maybe String, Bool, Maybe UsageContext)] -> (Int, Int, NameDefinition, Maybe UsageContext) -> Assertion
+assertUsageContext names expected = assertBoolVerbose ("actual names: " ++ show names) $ any (matchRow expected) names
+  where matchRow (l, c, nd, ctx) (l', c', n, _, _, ctx') =
+          l == l' && c == c' && ctx == ctx'
+            && ndName nd == fnName n && (case nd of Local _ -> isJust (fnLocalName n); _ -> True)
 
 runGhcTestNoSuccessCheck :: ReaderT DbConn IO SuccessFlag
 runGhcTestNoSuccessCheck =

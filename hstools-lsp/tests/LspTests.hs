@@ -25,6 +25,7 @@ import qualified Data.Map as Map
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.Aeson as A
 import qualified Data.Aeson.KeyMap as A
+import qualified Data.Vector as V
 import Database.PostgreSQL.Simple
 import System.Directory
 import System.FilePath
@@ -237,9 +238,9 @@ setupSimpleTestFile = do
   let x = FullName "X.x" Nothing (Just ValNS)
   let y = FullName "X.y" Nothing (Just ValNS)
   persistName 
-    [ (mi, asts !! 0, x, True, Just (SP.Range (SP 1 1) (SP 1 6)))
-    , (mi, asts !! 1, y, False, Nothing)
-    , (mi, asts !! 2, y, True, Just (SP.Range (SP 2 1) (SP 2 7)))
+    [ (mi, asts !! 0, x, True, Just (SP.Range (SP 1 1) (SP 1 6)), Nothing)
+    , (mi, asts !! 1, y, False, Nothing, Just ExprContext)
+    , (mi, asts !! 2, y, True, Just (SP.Range (SP 2 1) (SP 2 7)), Nothing)
     ]
   persistTypes
     [ (x, "()")
@@ -262,14 +263,73 @@ setupAnotherTestFile = do
   let x = FullName "X.x" Nothing (Just ValNS)
   let z = FullName "X.z" Nothing (Just ValNS)
   persistName
-    [ (mi, asts !! 0, z, True, Just $ SP.Range (SP 2 1) (SP 2 6))
-    , (mi, asts !! 1, x, False, Nothing)
+    [ (mi, asts !! 0, z, True, Just $ SP.Range (SP 2 1) (SP 2 6), Nothing)
+    , (mi, asts !! 1, x, False, Nothing, Just ExprContext)
     ]
   persistTypes
     [ (x, "()")
     , (z, "()")
     ]
   return (fileName, T.pack content)
+
+-- | Test that FindUnusedDefinitions returns unused definitions via LSP.
+test_findUnusedDefinitions :: Assertion
+test_findUnusedDefinitions = useTestRepo $ do
+  initializeTables
+  (fileName, fileContent) <- setupUnusedDefsTestFile
+  liftIO $ runTest $ do
+    _doc <- createDoc fileName "haskell" fileContent
+    ResponseMessage _ _ result <- LSP.request (SCustomMethod "FindUnusedDefinitions") A.Null
+    case result of
+      Right val -> do
+        let arr = case val of
+              A.Array v -> V.toList v
+              _ -> []
+        let defNames = map extractDefName arr
+        liftIO $ assertBoolVerbose
+          ("Expected X.x to be unused but got: " ++ show defNames)
+          ("X.x" `elem` defNames)
+        liftIO $ assertBoolVerbose
+          ("Expected X.y NOT to be unused but got: " ++ show defNames)
+          ("X.y" `notElem` defNames)
+      Left err ->
+        liftIO $ assertFailure $ "FindUnusedDefinitions request failed: " ++ show err
+
+-- | Set up a module where x is unused and y is used (by x).
+setupUnusedDefsTestFile :: ReaderT DbConn IO (FilePath, T.Text)
+setupUnusedDefsTestFile = do
+  let fileName = testFilePrefix ++ "/U.hs"
+  fullFilePath <- liftIO $ ((</> fileName) <$> getCurrentDirectory) >>= canonicalizePath
+  let content = unlines ["x = y", "y = ()"]
+  time <- liftIO getCurrentTime
+  mi <- insertModule fullFilePath time "U" "test" content
+  asts <- persistAst
+    [ FullRange mi $ SP.Range (SP 1 1) (SP 1 2)   -- 0: x name
+    , FullRange mi $ SP.Range (SP 1 5) (SP 1 6)   -- 1: y use in x
+    , FullRange mi $ SP.Range (SP 2 1) (SP 2 2)   -- 2: y name
+    , FullRange mi $ SP.Range (SP 1 1) (SP 1 6)   -- 3: x def span
+    , FullRange mi $ SP.Range (SP 2 1) (SP 2 7)   -- 4: y def span
+    , FullRange mi $ SP.Range (SP 1 1) (SP 3 1)   -- 5: module span
+    ]
+  _defs <- persistDefinitions
+    [ (mi, asts !! 5, DefModule)
+    , (mi, asts !! 3, DefValue)
+    , (mi, asts !! 4, DefValue)
+    ]
+  let x = FullName "X.x" Nothing (Just ValNS)
+  let y = FullName "X.y" Nothing (Just ValNS)
+  persistName
+    [ (mi, asts !! 0, x, True, Just (SP.Range (SP 1 1) (SP 1 6)), Nothing)
+    , (mi, asts !! 1, y, False, Nothing, Just ExprContext)
+    , (mi, asts !! 2, y, True, Just (SP.Range (SP 2 1) (SP 2 7)), Nothing)
+    ]
+  return (fileName, T.pack content)
+
+extractDefName :: A.Value -> String
+extractDefName (A.Object o) = case A.lookup "name" o of
+  Just (A.String t) -> T.unpack t
+  _ -> ""
+extractDefName _ = ""
 
 testFilePrefix :: String
 testFilePrefix = "hstools-test-temp"

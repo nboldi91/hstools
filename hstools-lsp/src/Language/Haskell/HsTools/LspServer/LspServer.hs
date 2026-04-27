@@ -151,6 +151,11 @@ handlers = mconcat
       let results = A.Array $ V.fromList $ map instanceToJSON unusedInstances
       liftLSP $ responder $ Right results
 
+  , request (SCustomMethod "FindUnusedDefinitions") $ \_args responder -> do
+      unusedDefs <- getUnusedDefinitions
+      let results = A.Array $ V.fromList $ map definitionToJSON unusedDefs
+      liftLSP $ responder $ Right results
+
   , notification (SCustomMethod "CleanDB") $ \args -> do
       case args of
         A.Array (V.toList -> [ A.Null ]) -> do
@@ -329,9 +334,23 @@ instanceToJSON (instId, filePath, className, typeName, kind, startLine, startCol
     , "endColumn" A..= endCol
     ]
 
+definitionToJSON :: (DefinitionKind, String, String, Int, Int, Int, Int, Bool, Bool) -> A.Value
+definitionToJSON (kind, name, filePath, startLine, startCol, endLine, endCol, hasExprUsage, hasPatternUsage) =
+  A.object
+    [ "definitionKind" A..= show kind
+    , "name" A..= name
+    , "filePath" A..= filePath
+    , "startLine" A..= startLine
+    , "startColumn" A..= startCol
+    , "endLine" A..= endLine
+    , "endColumn" A..= endCol
+    , "hasExprUsage" A..= hasExprUsage
+    , "hasPatternUsage" A..= hasPatternUsage
+    ]
+
 hstoolsOptions :: Options
 hstoolsOptions = defaultOptions
-  { executeCommandCommands = Just ["CleanDB", "TestNotification", "TestRequest", "FindUnusedInstances"]
+  { executeCommandCommands = Just ["CleanDB", "TestNotification", "TestRequest", "FindUnusedInstances", "FindUnusedDefinitions"]
   , textDocumentSync = Just syncOptions
   }
   where

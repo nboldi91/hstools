@@ -540,6 +540,272 @@ extractClassName (A.Object o) = case A.lookup "className" o of
   _ -> ""
 extractClassName _ = ""
 
+extractDefName :: A.Value -> String
+extractDefName (A.Object o) = case A.lookup "name" o of
+  Just (A.String t) -> T.unpack t
+  _ -> ""
+extractDefName _ = ""
+
+extractDefField :: String -> A.Value -> Maybe A.Value
+extractDefField key (A.Object o) = A.lookup (fromString key) o
+extractDefField _ _ = Nothing
+
+-----------------------------------------
+--- Integration test: unused definition detection
+
+test_findUnusedDefinitions_simpleUnused :: Assertion
+test_findUnusedDefinitions_simpleUnused = withPluginPopulatedDB
+  [ ("UD.hs", unlines
+      [ "module UD where"
+      , "used :: Int"
+      , "used = 42"
+      , "unused :: Int"
+      , "unused = 99"
+      , "x :: Int"
+      , "x = used"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  liftIO $ assertBoolVerbose
+    ("Expected UD.unused to be unused but got: " ++ show defNames)
+    ("UD.unused" `elem` defNames)
+  liftIO $ assertBoolVerbose
+    ("Expected UD.used NOT to be unused but got: " ++ show defNames)
+    ("UD.used" `notElem` defNames)
+
+test_findUnusedDefinitions_constructorUsageContext :: Assertion
+test_findUnusedDefinitions_constructorUsageContext = withPluginPopulatedDB
+  [ ("UC.hs", unlines
+      [ "module UC where"
+      , "data D = MkD Int"
+      , "f :: D -> Int"
+      , "f (MkD n) = n"
+      , "g :: D"
+      , "g = MkD 1"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- MkD is used in both pattern (f) and expression (g), so should NOT be unused
+  liftIO $ assertBoolVerbose
+    ("Expected UC.MkD NOT to be unused but got: " ++ show defNames)
+    ("UC.MkD" `notElem` defNames)
+
+test_findUnusedDefinitions_constructorOnlyPattern :: Assertion
+test_findUnusedDefinitions_constructorOnlyPattern = withPluginPopulatedDB
+  [ ("UP.hs", unlines
+      [ "module UP where"
+      , "data D = MkD Int"
+      , "f :: D -> Int"
+      , "f (MkD n) = n"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let mkdDefs = filter (\(_, n, _, _, _, _, _, _, _) -> n == "UP.MkD") defs
+  -- MkD is used only in pattern, should appear with hasPatternUsage=True, hasExprUsage=False
+  liftIO $ assertBoolVerbose
+    ("Expected UP.MkD to appear in unused defs (only pattern usage) but got: " ++ show mkdDefs)
+    (not $ null mkdDefs)
+  liftIO $ assertBoolVerbose
+    ("Expected UP.MkD to have pattern usage but got: " ++ show mkdDefs)
+    (any (\(_, _, _, _, _, _, _, _, hasPat) -> hasPat) mkdDefs)
+  liftIO $ assertBoolVerbose
+    ("Expected UP.MkD to NOT have expr usage but got: " ++ show mkdDefs)
+    (any (\(_, _, _, _, _, _, _, hasExpr, _) -> not hasExpr) mkdDefs)
+
+test_findUnusedDefinitions_foreignExportNotFlagged :: Assertion
+test_findUnusedDefinitions_foreignExportNotFlagged = withPluginPopulatedDB
+  [ ("FE.hs", unlines
+      [ "module FE where"
+      , "myFun :: Int -> Int"
+      , "myFun x = x + 1"
+      , "foreign export ccall myFun :: Int -> Int"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- foreign export should not be flagged, and myFun is exported via foreign export
+  -- myFun may still appear as unused (since we don't track that the foreign export uses it)
+  -- but the foreign export definition itself should NOT appear
+  let defKinds = map (\(k, _, _, _, _, _, _, _, _) -> k) defs
+  liftIO $ assertBoolVerbose
+    ("Expected no DefForeignExport in unused defs but got: " ++ show defs)
+    (DefForeignExport `notElem` defKinds)
+
+test_findUnusedDefinitions_recordConNotFlagged :: Assertion
+test_findUnusedDefinitions_recordConNotFlagged = withPluginPopulatedDB
+  [ ("RC.hs", unlines
+      [ "module RC where"
+      , "data D = MkD { fld :: Int }"
+      , "x :: D"
+      , "x = MkD { fld = 1 }"
+      , "f :: D -> Int"
+      , "f (MkD n) = n"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- MkD is used in both expression (RecordCon) and pattern context, so should not be unused
+  liftIO $ assertBoolVerbose
+    ("Expected RC.MkD NOT to be unused but got: " ++ show defNames)
+    ("RC.MkD" `notElem` defNames)
+
+test_findUnusedDefinitions_recordConOnlyExpr :: Assertion
+test_findUnusedDefinitions_recordConOnlyExpr = withPluginPopulatedDB
+  [ ("RE.hs", unlines
+      [ "module RE where"
+      , "data D = MkD { fld :: Int }"
+      , "x :: D"
+      , "x = MkD { fld = 1 }"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- MkD { fld = 1 } references field 'fld', so constructor is not flagged
+  liftIO $ assertBoolVerbose
+    ("Expected RE.MkD NOT to be unused (field used in record con) but got: " ++ show defNames)
+    ("RE.MkD" `notElem` defNames)
+
+test_findUnusedDefinitions_unusedField :: Assertion
+test_findUnusedDefinitions_unusedField = withPluginPopulatedDB
+  [ ("UF.hs", unlines
+      [ "module UF where"
+      , "data D = MkD { usedFld :: Int, unusedFld :: String }"
+      , "x :: D -> Int"
+      , "x d = usedFld d"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  liftIO $ assertBoolVerbose
+    ("Expected UF.unusedFld to be unused but got: " ++ show defNames)
+    ("UF.unusedFld" `elem` defNames)
+  liftIO $ assertBoolVerbose
+    ("Expected UF.usedFld NOT to be unused but got: " ++ show defNames)
+    ("UF.usedFld" `notElem` defNames)
+
+test_findUnusedDefinitions_fieldUsedInPattern :: Assertion
+test_findUnusedDefinitions_fieldUsedInPattern = withPluginPopulatedDB
+  [ ("FP.hs", unlines
+      [ "module FP where"
+      , "data D = MkD { fld :: Int }"
+      , "x :: D -> Int"
+      , "x (MkD { fld = n }) = n"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  liftIO $ assertBoolVerbose
+    ("Expected FP.fld NOT to be unused but got: " ++ show defNames)
+    ("FP.fld" `notElem` defNames)
+
+test_findUnusedDefinitions_fieldReadByPositionalPattern :: Assertion
+test_findUnusedDefinitions_fieldReadByPositionalPattern = withPluginPopulatedDB
+  [ ("PP.hs", unlines
+      [ "module PP where"
+      , "data D = MkD { fld1 :: Int, fld2 :: String }"
+      , "x :: D -> Int"
+      , "x (MkD n _) = n"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- fld1 and fld2 are implicitly read via positional pattern match on MkD
+  liftIO $ assertBoolVerbose
+    ("Expected PP.fld1 NOT to be unused but got: " ++ show defNames)
+    ("PP.fld1" `notElem` defNames)
+  liftIO $ assertBoolVerbose
+    ("Expected PP.fld2 NOT to be unused but got: " ++ show defNames)
+    ("PP.fld2" `notElem` defNames)
+
+test_findUnusedDefinitions_constructorNotFlaggedWhenFieldsUsed :: Assertion
+test_findUnusedDefinitions_constructorNotFlaggedWhenFieldsUsed = withPluginPopulatedDB
+  [ ("CF.hs", unlines
+      [ "module CF where"
+      , "data D = MkD { fld :: Int }"
+      , "x :: D -> Int"
+      , "x d = fld d"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- MkD has no direct usage but its field fld is used as a selector, so don't flag MkD
+  liftIO $ assertBoolVerbose
+    ("Expected CF.MkD NOT to be unused but got: " ++ show defNames)
+    ("CF.MkD" `notElem` defNames)
+
+test_findUnusedDefinitions_localPatternVarNotFlagged :: Assertion
+test_findUnusedDefinitions_localPatternVarNotFlagged = withPluginPopulatedDB
+  [ ("LP.hs", unlines
+      [ "module LP where"
+      , "data D = MkD Int String"
+      , "x :: D -> Int"
+      , "x (MkD n _) = n"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- local pattern variables like 'n' should not be flagged as unused definitions
+  liftIO $ assertBoolVerbose
+    ("Expected no local pattern vars in unused defs but got: " ++ show defNames)
+    (all (\n -> not ("LP.n" `isInfixOf` n)) defNames)
+
+test_findUnusedDefinitions_crossModuleConstructor :: Assertion
+test_findUnusedDefinitions_crossModuleConstructor = withPluginPopulatedDB
+  [ ("CM_Types.hs", unlines
+      [ "module CM_Types where"
+      , "data IntervalSize = IntervalDay | IntervalMonth"
+      ])
+  , ("CM_Parser.hs", unlines
+      [ "module CM_Parser where"
+      , "import CM_Types"
+      , "mkDay :: IntervalSize"
+      , "mkDay = IntervalDay"
+      ])
+  , ("CM_Use.hs", unlines
+      [ "module CM_Use where"
+      , "import CM_Types"
+      , "isDay :: IntervalSize -> Bool"
+      , "isDay IntervalDay = True"
+      , "isDay _ = False"
+      ])
+  ] $ \_tmpDir -> do
+  defs <- getUnusedDefinitions
+  let defNames = map (\(_, n, _, _, _, _, _, _, _) -> n) defs
+  -- IntervalDay is constructed in CM_Parser and pattern-matched in CM_Use
+  liftIO $ assertBoolVerbose
+    ("Expected CM_Types.IntervalDay NOT to be unused but got: " ++ show defNames)
+    ("CM_Types.IntervalDay" `notElem` defNames)
+
+test_findUnusedDefinitions_lspRequest :: Assertion
+test_findUnusedDefinitions_lspRequest = withPluginPopulatedDB
+  [ ("UL.hs", unlines
+      [ "module UL where"
+      , "used :: Int"
+      , "used = 42"
+      , "unused :: String"
+      , "unused = \"hello\""
+      , "x :: Int"
+      , "x = used"
+      ])
+  ] $ \_tmpDir -> do
+  liftIO $ runTest $ do
+    ResponseMessage _ _ result <- LSP.request (SCustomMethod "FindUnusedDefinitions") A.Null
+    case result of
+      Right val -> do
+        let arr = case val of
+              A.Array v -> V.toList v
+              _ -> []
+        let defNames = map extractDefName arr
+        liftIO $ assertBoolVerbose
+          ("Expected UL.unused in unused defs but got: " ++ show defNames)
+          ("UL.unused" `elem` defNames)
+        liftIO $ assertBoolVerbose
+          ("Expected UL.used NOT in unused defs but got: " ++ show defNames)
+          ("UL.used" `notElem` defNames)
+      Left err ->
+        liftIO $ assertFailure $ "FindUnusedDefinitions request failed: " ++ show err
 
 instance DBMonad (ReaderT DbConn IO) where
   getConnection = asks dbConnConnection

@@ -78,7 +78,7 @@ storeParsed md = do
       convertDefinition ((ParseDefinitionRecord kind _), astId) = Just (moduleId, astId, kind)
       convertDefinition _ = Nothing
       convertName ((ParseModuleName mn _ isDefined definition), astId) =
-        Just (moduleId, astId :: Int, FullName mn Nothing (Just ModuleNS), isDefined, definition)
+        Just (moduleId, astId :: Int, FullName mn Nothing (Just ModuleNS), isDefined, definition, Nothing)
       convertName _ = Nothing
     withReaderT storeParamsDbConn $ do
       astIds <- persistAst (map convertLocation sortedDefs)
@@ -112,8 +112,8 @@ persistNames moduleId names = do
     astIds <- persistAst (map (FullRange moduleId . nmPos) names)
     persistName (map convertName (names `zip` astIds))
   where
-    convertName ((NameRecord name isDefined definition _), id) =
-      (moduleId, id :: Int, name, isDefined, definition)
+    convertName ((NameRecord name isDefined definition _ usageCtx), id) =
+      (moduleId, id :: Int, name, isDefined, definition, usageCtx)
 
 storeTypes :: TcGblEnv -> StoreStageM ()
 storeTypes env = do
@@ -150,7 +150,7 @@ persistNamesAndTypes moduleId namesAndTypes = do
     persistName (map convertName (namesAndTypes `zip` astIds))
     persistTypes (catMaybes $ map convertType namesAndTypes)
   where
-    convertName (NameAndTypeRecord { ntrName, ntrIsDefined }, id) = (moduleId, id :: Int, ntrName, ntrIsDefined, Nothing)
+    convertName (NameAndTypeRecord { ntrName, ntrIsDefined, ntrUsageContext }, id) = (moduleId, id :: Int, ntrName, ntrIsDefined, Nothing, ntrUsageContext)
     convertType (NameAndTypeRecord { ntrName, ntrType }) = fmap (ntrName, ) ntrType
 
 persistTHRange :: SrcSpan -> Int -> [NameAndTypeRecord] -> PersistStageM ()

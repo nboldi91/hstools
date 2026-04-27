@@ -32,6 +32,9 @@ data DefinitionKind
 data InstanceKind = HandWrittenInstance | DerivedInstance | StandaloneDerivedInstance
   deriving (Show, Eq, Ord, Enum)
 
+data UsageContext = ExprContext | PatternContext | TypeContext | OtherContext
+  deriving (Show, Eq, Ord, Enum)
+
 data FullName = FullName
   { fnName :: String
   , fnLocalName :: Maybe String
@@ -168,6 +171,24 @@ getAllNames =
     convertName (startRow, startColumn, name, localName, namespace, typ, isDefined) =
       (startRow, startColumn, FullName name localName (fmap toEnum namespace), typ, isDefined)
 
+getAllNamesWithUsageContext :: DBMonad m => m [(Int, Int, FullName, Maybe String, Bool, Maybe UsageContext)]
+getAllNamesWithUsageContext = 
+  map convertName <$> query_
+    [sql|
+      SELECT startRow, startColumn, name, localName, namespace, type, isDefined, usageKind
+      FROM ast AS n
+      JOIN names nn
+        ON nn.astNode = n.astId
+      LEFT JOIN types tt
+        ON tt.typedName = nn.name
+        AND ((tt.typedLocalName IS NULL AND nn.localName IS NULL) OR tt.typedLocalName = nn.localName)
+        AND tt.typedNamespace = nn.namespace
+      ORDER BY startRow, startColumn
+    |]
+  where
+    convertName (startRow, startColumn, name, localName, namespace, typ, isDefined, usageKind) =
+      (startRow, startColumn, FullName name localName (fmap toEnum namespace), typ, isDefined, fmap toEnum usageKind)
+
 persistAst :: DBMonad m => [FullRange a] -> m [Int]
 persistAst asts = fmap head <$> returning
   [sql|
@@ -188,16 +209,16 @@ persistDefinitions definitions = fmap head <$> returning
   |]
   (map (\(a,b,c) -> (a,b, fromEnum c)) definitions)
 
-persistName :: DBMonad m => [(Int, Int, FullName, Bool, Maybe (Range a))] -> m ()
+persistName :: DBMonad m => [(Int, Int, FullName, Bool, Maybe (Range a), Maybe UsageContext)] -> m ()
 persistName names = void $ executeMany
   [sql|
-    INSERT INTO names (module, astNode, name, localName, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO names (module, astNode, name, localName, namespace, isDefined, namedDefinitionRow, namedDefinitionColumn, namedDefinitionEndRow, namedDefinitionEndColumn, usageKind)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   |]
   (map convertRecord names)
   where
-    convertRecord (mod, ast, FullName name localName namespace, isDefined, rn) =
-      (mod, ast, name, localName, fmap fromEnum namespace, isDefined, fmap startLine rn, fmap startCol rn, fmap endLine rn, fmap endCol rn)
+    convertRecord (mod, ast, FullName name localName namespace, isDefined, rn, ctx) =
+      (mod, ast, name, localName, fmap fromEnum namespace, isDefined, fmap startLine rn, fmap startCol rn, fmap endLine rn, fmap endCol rn, fmap fromEnum ctx)
 
 persistTypes :: DBMonad m => [(FullName, String)] -> m ()
 persistTypes types = void $ executeMany
@@ -359,6 +380,214 @@ getUnusedInstances =
       JOIN modules m ON i.module = m.moduleId
       JOIN ast a ON i.astNode = a.astId
       WHERE i.instanceId NOT IN (SELECT instanceId FROM used_instances)
+    |]
+
+-- | Get definitions that are unused or partially used across the whole project.
+--
+-- Returns two kinds of results (combined via OR):
+--   * CASE A – completely unused definitions (no non-defining usage anywhere).
+--   * CASE B – constructors with partial usage context (used, but missing
+--              either expression-context or pattern-context usage).
+--
+-- Special rules:
+--   * Record fields (DefCtorArg) are only flagged when they are genuine field
+--     declarations inside a data constructor — local pattern variables that
+--     share the same definition kind are ignored.  A field is also considered
+--     used if its parent constructor is pattern-matched (positional patterns
+--     read all fields implicitly).
+--   * Constructors are not flagged when any of their child record fields
+--     have usages (field-selector usage implies the constructor's data is
+--     being accessed).
+--
+-- Each result row carries:
+--   (definitionKind, name, filePath, startRow, startCol, endRow, endCol,
+--    hasExprUsage, hasPatternUsage)
+getUnusedDefinitions :: DBMonad m => m [(DefinitionKind, String, String, Int, Int, Int, Int, Bool, Bool)]
+getUnusedDefinitions =
+  map (\(k, n, fp, sr, sc, er, ec, hasExpr, hasPat) -> (toEnum k, n, fp, sr, sc, er, ec, hasExpr, hasPat)) <$> query_
+    [sql|
+      -- ── CTE: every definition joined with its defining name ────────────
+      -- Links definitions to names by matching AST span within the same module.
+      -- Reused below both for the main query and for parent/child span lookups.
+      WITH named_defs AS (
+        SELECT d.definitionId, d.definitionKind, d.module, d.parentDefinition,
+               n.name, n.localName, n.namespace,
+               a.startRow, a.startColumn, a.endRow, a.endColumn,
+               m.filePath
+        FROM definitions d
+        JOIN ast a ON d.astNode = a.astId
+        JOIN modules m ON d.module = m.moduleId
+        JOIN names n
+          ON n.module = d.module
+          AND a.startRow   = n.namedDefinitionRow
+          AND a.startColumn = n.namedDefinitionColumn
+          AND a.endRow     = n.namedDefinitionEndRow
+          AND a.endColumn  = n.namedDefinitionEndColumn
+          AND n.isDefined = true
+      )
+
+      SELECT nd.definitionKind, nd.name, nd.filePath,
+             nd.startRow, nd.startColumn, nd.endRow, nd.endColumn,
+
+             -- Per-row: does this name appear in expression context somewhere?
+             EXISTS (
+               SELECT 1 FROM names u
+               WHERE u.name = nd.name
+                 AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                 AND u.namespace = nd.namespace
+                 AND u.isDefined = false AND u.usageKind = 0
+             ) AS hasExprUsage,
+
+             -- Per-row: does this name appear in pattern context somewhere?
+             EXISTS (
+               SELECT 1 FROM names u
+               WHERE u.name = nd.name
+                 AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                 AND u.namespace = nd.namespace
+                 AND u.isDefined = false AND u.usageKind = 1
+             ) AS hasPatternUsage
+
+      FROM named_defs nd
+      WHERE
+        -- 1. Applicable definition kinds
+        --    3=PatternSynonym 5=Value 6=TypeClass 7=Parameter 8=TypeDecl
+        --    9=Constructor 10=CtorArg(field) 12=ForeignImport
+        --    (notably excludes 11=ForeignExport)
+        nd.definitionKind IN (3, 5, 6, 7, 8, 9, 10, 12)
+
+        -- 2. Exclude main entry points
+        AND nd.name NOT IN (SELECT name FROM mains)
+
+        -- 3. Exclude definitions whose parent is an instance or type class
+        AND NOT EXISTS (
+          SELECT 1 FROM definitions pd
+          WHERE pd.definitionId = nd.parentDefinition
+            AND pd.definitionKind IN (2, 6)
+        )
+
+        AND (
+          -- ── CASE A: completely unused ─────────────────────────────────
+          (
+            -- No non-defining usage of this name anywhere
+            NOT EXISTS (
+              SELECT 1 FROM names u
+              WHERE u.name = nd.name
+                AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                AND u.namespace = nd.namespace
+                AND u.isDefined = false
+            )
+
+            -- A1. Record fields (kind=10): must live inside a constructor
+            --     definition (filters out local pattern variables that the
+            --     plugin also tags as DefCtorArg).
+            --     Also skip if the parent constructor is pattern-matched,
+            --     because positional patterns implicitly read all fields.
+            AND (
+              nd.definitionKind != 10
+              OR (
+                -- field is inside a constructor span
+                EXISTS (
+                  SELECT 1 FROM named_defs ctor
+                  WHERE ctor.module = nd.module AND ctor.definitionKind = 9
+                    AND (ctor.startRow < nd.startRow
+                         OR (ctor.startRow = nd.startRow AND ctor.startColumn <= nd.startColumn))
+                    AND (ctor.endRow > nd.endRow
+                         OR (ctor.endRow = nd.endRow AND ctor.endColumn >= nd.endColumn))
+                )
+                -- …and that constructor has no pattern-context usage
+                AND NOT EXISTS (
+                  SELECT 1 FROM named_defs ctor
+                  WHERE ctor.module = nd.module AND ctor.definitionKind = 9
+                    AND (ctor.startRow < nd.startRow
+                         OR (ctor.startRow = nd.startRow AND ctor.startColumn <= nd.startColumn))
+                    AND (ctor.endRow > nd.endRow
+                         OR (ctor.endRow = nd.endRow AND ctor.endColumn >= nd.endColumn))
+                    AND EXISTS (
+                      SELECT 1 FROM names u
+                      WHERE u.name = ctor.name
+                        AND (u.localName IS NOT DISTINCT FROM ctor.localName)
+                        AND u.namespace = ctor.namespace
+                        AND u.isDefined = false AND u.usageKind = 1
+                    )
+                )
+              )
+            )
+
+            -- A2. Constructors (kind=9): skip if any child record field
+            --     has usages (field-selector access implies the data is read).
+            AND (
+              nd.definitionKind != 9
+              OR NOT EXISTS (
+                SELECT 1 FROM named_defs fld
+                WHERE fld.module = nd.module AND fld.definitionKind = 10
+                  AND (nd.startRow < fld.startRow
+                       OR (nd.startRow = fld.startRow AND nd.startColumn <= fld.startColumn))
+                  AND (nd.endRow > fld.endRow
+                       OR (nd.endRow = fld.endRow AND nd.endColumn >= fld.endColumn))
+                  AND EXISTS (
+                    SELECT 1 FROM names u
+                    WHERE u.name = fld.name
+                      AND (u.localName IS NOT DISTINCT FROM fld.localName)
+                      AND u.namespace = fld.namespace
+                      AND u.isDefined = false
+                  )
+              )
+            )
+          )
+
+          OR
+
+          -- ── CASE B: constructor with partial usage context ────────────
+          -- Constructor IS used, but is missing expression or pattern
+          -- context (e.g. only constructed, never matched — or vice versa).
+          (
+            nd.definitionKind = 9
+
+            -- has at least one non-defining usage
+            AND EXISTS (
+              SELECT 1 FROM names u
+              WHERE u.name = nd.name
+                AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                AND u.namespace = nd.namespace
+                AND u.isDefined = false
+            )
+
+            -- …but is missing expression-context or pattern-context usage
+            AND (
+              NOT EXISTS (
+                SELECT 1 FROM names u
+                WHERE u.name = nd.name
+                  AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                  AND u.namespace = nd.namespace
+                  AND u.isDefined = false AND u.usageKind = 0
+              )
+              OR NOT EXISTS (
+                SELECT 1 FROM names u
+                WHERE u.name = nd.name
+                  AND (u.localName IS NOT DISTINCT FROM nd.localName)
+                  AND u.namespace = nd.namespace
+                  AND u.isDefined = false AND u.usageKind = 1
+              )
+            )
+
+            -- B1. Skip if any child record field has usages
+            AND NOT EXISTS (
+              SELECT 1 FROM named_defs fld
+              WHERE fld.module = nd.module AND fld.definitionKind = 10
+                AND (nd.startRow < fld.startRow
+                     OR (nd.startRow = fld.startRow AND nd.startColumn <= fld.startColumn))
+                AND (nd.endRow > fld.endRow
+                     OR (nd.endRow = fld.endRow AND nd.endColumn >= fld.endColumn))
+                AND EXISTS (
+                  SELECT 1 FROM names u
+                  WHERE u.name = fld.name
+                    AND (u.localName IS NOT DISTINCT FROM fld.localName)
+                    AND u.namespace = fld.namespace
+                    AND u.isDefined = false
+                )
+            )
+          )
+        )
     |]
 
 getAllDefinitions :: DBMonad m => m [(DefinitionKind, Maybe String, Int, Int, Int, Int)]
@@ -523,7 +752,7 @@ initializeTables :: DBMonad m => m ()
 initializeTables = void $ execute databaseSchema (Only databaseSchemaVersion)
 
 databaseSchemaVersion :: Int
-databaseSchemaVersion = 10
+databaseSchemaVersion = 11
 
 databaseSchema :: Query
 databaseSchema = [sql|
@@ -575,6 +804,7 @@ databaseSchema = [sql|
     , name TEXT NOT NULL
     , localName TEXT
     , namespace INT
+    , usageKind INT
     );
 
   CREATE INDEX ON names USING HASH (module);

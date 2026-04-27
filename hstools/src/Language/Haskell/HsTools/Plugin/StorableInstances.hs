@@ -353,11 +353,11 @@ instance StorablePass p r => Storable (HsLocalBinds (GhcPass p)) r where
 instance StorablePass p r => Storable (HsType (GhcPass p)) r where
   store t
     | Just ls <- splitHsFunTys t
-    = mapM_ (storeLoc $ storeDefCtx DefParameter . store) ls
+    = mapM_ (storeLoc $ storeDefCtx DefParameter . inTypeContext . store) ls
   store (HsFunTy {}) = error "Should have been handled earlier"
   store (HsForAllTy _ vars body) = store vars >> store body
   store (HsQualTy _ ctx body) = store ctx >> store body
-  store (HsTyVar _ _ id) = store id
+  store (HsTyVar _ _ id) = inTypeContext $ store id
   store (HsAppTy _ lhs rhs) = store lhs >> store rhs
   store (HsListTy _ t) = store t
   store (HsTupleTy _ _ []) = store (getTypedName unitTyCon) -- unit type
@@ -391,9 +391,9 @@ splitHsFunTys' t = [t]
 ---------------------------------------
 
 instance StorablePass p r => Storable (HsExpr (GhcPass p)) r where 
-    store (HsVar _ id) = store id
+    store (HsVar _ id) = inExprContext $ store id
     store (HsUnboundVar {}) = return () -- hole or naming error
-    store (HsConLikeOut _ conLike) = store (conLikeWrapId_maybe conLike)
+    store (HsConLikeOut _ conLike) = inExprContext $ store (conLikeWrapId_maybe conLike)
     store (HsRecFld _ selector) = store selector
     store (HsOverLabel {}) = return () -- rebindable syntax
     store (HsIPVar {}) = return () -- implicit parameter
@@ -416,7 +416,7 @@ instance StorablePass p r => Storable (HsExpr (GhcPass p)) r where
     store (HsLet _ locBinds e) = store locBinds >> store e
     store (HsDo _ _ stmts) = store stmts
     store (ExplicitList _ _ es) = store es
-    store (RecordCon _ name flds) = store name >> store flds
+    store (RecordCon _ name flds) = inExprContext (store name) >> store flds
     store (RecordUpd _ name flds) = store name >> store flds
     store (ExprWithTySig t e) = store e >> store t
     store (ArithSeq _ _ si) = store si
@@ -474,7 +474,7 @@ instance StorablePass p r => Storable (Pat (GhcPass p)) r where
     store (ListPat _ pats) = store pats
     store (TuplePat _ pats _) = store pats
     store (SumPat _ pat _ _) = store pat
-    store (ConPatIn n details) = store n >> store details
+    store (ConPatIn n details) = inPatternContext (store n) >> store details
     store (ConPatOut {}) = return () -- after type checking
     store (ViewPat _ e pat) = store e >> store pat
     store (SplicePat _ sp) = store sp
@@ -561,11 +561,13 @@ instance Storable Name NameRecord where
       currentModuleName <- asks scModuleName
       defined <- asks scDefining
       defNodePos <- getDefinitionPosition
+      usageCtx <- asks scUsageContext
       let storedName = NameRecord
             { nmName = generateFullName currentModuleName id
             , nmIsDefined = defined
             , nmDefinitionOf = defNodePos
             , nmPos = realSrcSpanToNodePos span
+            , nmUsageContext = if defined then Nothing else usageCtx
             }
       tell [storedName] 
     _ -> liftIO $ putStrLn $ "WARNING " ++ (showSDocUnsafe $ ppr id) ++ " does not have a real src span"
@@ -588,6 +590,7 @@ instance Storable TypedName NameAndTypeRecord where
       Just np -> do
         currentModuleName <- asks scModuleName
         defined <- asks scDefining
+        usageCtx <- asks scUsageContext
         let typeStr = showSDocUnsafe $ ppr typ
         tell [
           NameAndTypeRecord
@@ -595,6 +598,7 @@ instance Storable TypedName NameAndTypeRecord where
             , ntrIsDefined = defined
             , ntrType = Just typeStr
             , ntrPos = np
+            , ntrUsageContext = if defined then Nothing else usageCtx
             }
           ] 
       Nothing -> return ()
@@ -646,11 +650,13 @@ instance Storable Name NameAndTypeRecord where
   store id = currentPos $ \np -> do
     currentModuleName <- asks scModuleName
     defined <- asks scDefining
+    usageCtx <- asks scUsageContext
     let record = NameAndTypeRecord
             { ntrName = generateFullName currentModuleName id
             , ntrIsDefined = defined
             , ntrType = Nothing
             , ntrPos = np
+            , ntrUsageContext = if defined then Nothing else usageCtx
             }
     tell [record] 
 
